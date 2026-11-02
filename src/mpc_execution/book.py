@@ -83,3 +83,42 @@ class LimitOrderBook:
         assert all(o.id in self.orders for q in list(self.bids.values()) + list(self.asks.values()) for o in q)
         in_book = sum(len(q) for q in self.bids.values()) + sum(len(q) for q in self.asks.values())
         assert in_book == len(self.orders), f"index has {len(self.orders)} orders, book has {in_book}"
+
+    def cancel(self, order_id):
+        if order_id not in self.orders:
+            raise KeyError
+        else:
+            order = self.orders.pop(order_id)
+            price, side, qty = order.price, order.side, order.qty
+            book_side = self.bids if side is Side.BUY else self.asks
+            queue = book_side[price]
+            queue.remove(order)
+            if not queue:
+                del book_side[price]
+            return qty
+
+    def queue_ahead(self, order_id):
+        if order_id not in self.orders:
+            raise KeyError
+        else:
+            tot_qty = 0
+            order = self.orders[order_id]
+            price, side = order.price, order.side
+
+            if side is Side.BUY:
+                book_side = self.bids
+                prices = [p for p in book_side if p > price]
+            else:
+                book_side = self.asks
+                prices = [p for p in book_side if p < price]
+
+            ahead_same_level = 0
+            for o in book_side[price]:
+                if o.id == order_id:
+                    break
+                ahead_same_level += o.qty
+
+            tot_qty += ahead_same_level
+            for p in prices:
+                tot_qty += sum(o.qty for o in book_side[p])
+            return tot_qty

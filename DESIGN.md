@@ -9,3 +9,5 @@
 **Consequence.** Costs expressed "relative to mid" (the paper's `c_t`) are floats in tick units. Any code that needs a price to *send* an order (candidate generation, mid-IOC) must round explicitly and record the rounding rule.
 
 ## D3 — Book invariants are enforced by construction in the matching logic and verified by check_invariants() in randomized tests, never checked at runtime in hot paths.
+
+## D4 - In the function `cancel` the line `queue.remove(order)` takes O(n). Might need later optimimization in case of long queues. 

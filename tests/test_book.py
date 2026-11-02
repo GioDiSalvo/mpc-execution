@@ -55,4 +55,35 @@ def test_book_never_crosses_under_random_operations():
         except NotImplementedError:
             pass # until future changes: then remove try
         b.check_invariants()
-    
+
+def test_queue_ahead_counts_better_prices_and_earlier_orders_at_same_price():
+    b = LimitOrderBook()
+    id_top, _ = b.add_limit(Side.BUY, 99, 10)
+    id_mid, _ = b.add_limit(Side.BUY, 98, 22)
+    id_last, _ = b.add_limit(Side.BUY, 98, 37)
+    assert b.queue_ahead(id_last) == 10 + 22
+    assert b.queue_ahead(id_mid) == 10
+    assert b.queue_ahead(id_top) == 0
+
+    assert b.cancel(id_mid) == 22
+    assert b.queue_ahead(id_last) == 10
+    b.check_invariants()
+
+def test_cancelling_last_order_at_a_level_removes_the_level():
+    b = LimitOrderBook()
+    o_id, _ = b.add_limit(Side.SELL, 104, 14)
+    b.add_limit(Side.SELL, 105, 11)
+    assert b.cancel(o_id) == 14
+    assert 104 not in b.asks
+    assert b.best_ask() == 105
+    b.check_invariants()
+
+def test_cancel_or_queue_ahead_of_non_existing_order_raises_error():
+    b = LimitOrderBook()
+    id1, _ = b.add_limit(Side.BUY, 99, 10)
+    with pytest.raises(KeyError):
+        b.cancel(id1 + 1)
+    id2, _ = b.add_limit(Side.SELL, 102, 14)
+    with pytest.raises(KeyError):
+        b.queue_ahead(id2 + 1)
+    b.check_invariants()
