@@ -28,6 +28,19 @@ class LimitOrderBook:
         self.orders: dict[int, Order] = {}         # keys are order_id, and val is the order itself
         self._next_id = 0
 
+    def __repr__(self):
+        def fmt_side(levels: dict[int, deque[Order]], prices: list[int]) -> str:
+            if not prices:
+                return "(empty)"
+            return " | ".join(
+                f"{p} x {sum(o.qty for o in levels[p])} ({len(levels[p])})" for p in prices
+            )
+
+        asks = sorted(self.asks)[:5][::-1]            # best ask last, close to bid
+        bids = sorted(self.bids, reverse=True)[:5]    # best bid first
+        header = f"LimitOrderBook(bid/ask {self.best_bid()}/{self.best_ask()}, spread {self.spread()})"
+        return "\n".join([header, f"  asks: {fmt_side(self.asks, asks)}", f"  bids: {fmt_side(self.bids, bids)}"])
+
     def best_bid(self) -> int | None:
         if not self.bids:
             return None
@@ -51,12 +64,21 @@ class LimitOrderBook:
         return (bid + ask) / 2
 
     def add_market(self, side, qty):
+        """
+        Execute a mrket order.
+        Returns the number of non filled shares and the list of fills.
+        Raises ValueError if qty <= 0.
+        """
         if qty <= 0:
             raise ValueError("quantity must be positive")
         limit = float("inf") if side is Side.BUY else float("-inf")
         return self._match(side, limit, qty) 
 
     def add_limit(self, side, price, qty, is_mine = False):
+        """
+        Execute the marketable part against the opposite side, then rest the residual in the book.
+        Returns (order_id, fills); order_id is None if nothing rested.
+        """
         if qty <= 0:
             raise ValueError("quantity must be positive")
 
@@ -73,6 +95,9 @@ class LimitOrderBook:
         return order_id, fills
 
     def check_invariants(self):
+        """
+        General sanity check: no bid-ask crossing, no empty levels, no non-positive qty, no wrong order stored.
+        """
         bid, ask = self.best_bid(), self.best_ask()
         assert bid is None or ask is None or bid < ask, f"crossed book: bid ({bid}) >= ask({ask})"
         for side in (self.bids, self.asks):
@@ -84,6 +109,10 @@ class LimitOrderBook:
         assert in_book == len(self.orders), f"index has {len(self.orders)} orders, book has {in_book}"
 
     def _remove(self, order):
+        """
+        Remove the given order from its queue in the book, deleting the queue itself if left empty.
+        The order is removed from the record self.orders coherently.
+        """
         price, side, o_id = order.price, order.side, order.id
         book_side = self.bids if side is Side.BUY else self.asks
         queue = book_side[price]
@@ -93,6 +122,11 @@ class LimitOrderBook:
         del self.orders[o_id]
 
     def cancel(self, order_id):
+        """
+        Withdraw a resting order.
+        Returns the cancelled quantity.
+        Raises KeyError if the id is unknown.
+        """
         if order_id not in self.orders:
             raise KeyError(f"unknown order id {order_id}")
         order = self.orders[order_id]
@@ -100,6 +134,10 @@ class LimitOrderBook:
         return order.qty
 
     def queue_ahead(self, order_id):
+        """
+        Returns the amount of shares related to orders at better price and to earlier orders at same price.
+        Raises KeyError if the id is unknown.
+        """
         if order_id not in self.orders:
             raise KeyError
         else:
@@ -126,6 +164,12 @@ class LimitOrderBook:
             return tot_qty
 
     def _match(self, side, limit_price, qty):
+        """
+        Execute qty against the opposite side, level by level from the best, while the level price is within limit_price.
+        Fills occur at the resting order’s price.
+        Fully executed resting orders are removed.
+        Returns (residual, fills).
+        """
         fills = []
         opposite = self.asks if side is Side.BUY else self.bids
 

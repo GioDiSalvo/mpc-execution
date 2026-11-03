@@ -170,3 +170,14 @@ def test_sell_side_matching_mirrors_buy_side():
     assert b.bids[95][0].price == 95 and b.bids[95][0].qty == 15
     assert b.mid() is None and b.best_ask() is None 
     b.check_invariants()
+
+def test_repr_shows_top_levels_and_handles_empty_book():
+    b = LimitOrderBook()
+    assert "empty" in repr(b)
+    b.add_limit(Side.BUY, 100, 30)
+    b.add_limit(Side.BUY, 100, 20)
+    b.add_limit(Side.SELL, 102, 10)
+    r = repr(b)
+    assert "100 x 50 (2)" in r
+    assert "102 x 10 (1)" in r
+    assert "bid/ask 100/102" in r
