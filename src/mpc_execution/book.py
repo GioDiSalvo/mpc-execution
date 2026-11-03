@@ -50,28 +50,27 @@ class LimitOrderBook:
             return None
         return (bid + ask) / 2
 
+    def add_market(self, side, qty):
+        if qty <= 0:
+            raise ValueError("quantity must be positive")
+        limit = float("inf") if side is Side.BUY else float("-inf")
+        return self._match(side, limit, qty) 
+
     def add_limit(self, side, price, qty, is_mine = False):
         if qty <= 0:
             raise ValueError("quantity must be positive")
+
+        residual, fills = self._match(side, price, qty)
+        if residual == 0:
+            return None, fills
         
-        if side is Side.BUY:
-            opposite_best = self.best_ask()
-            crosses = opposite_best is not None and price >= opposite_best
-            book_side = self.bids
-        else:
-            opposite_best = self.best_bid()
-            crosses = opposite_best is not None and price <= opposite_best
-            book_side = self.asks
-
-        if crosses:
-            raise NotImplementedError("crossing orders: cycle 4")
-
         order_id = self._next_id
         self._next_id += 1
-        order = Order(order_id, side, price, qty, is_mine)
+        order = Order(order_id, side, price, residual, is_mine)
         self.orders[order_id] = order
+        book_side = self.bids if side is Side.BUY else self.asks
         book_side.setdefault(price, deque()).append(order)
-        return order_id, []
+        return order_id, fills
 
     def check_invariants(self):
         bid, ask = self.best_bid(), self.best_ask()
@@ -84,18 +83,21 @@ class LimitOrderBook:
         in_book = sum(len(q) for q in self.bids.values()) + sum(len(q) for q in self.asks.values())
         assert in_book == len(self.orders), f"index has {len(self.orders)} orders, book has {in_book}"
 
+    def _remove(self, order):
+        price, side, o_id = order.price, order.side, order.id
+        book_side = self.bids if side is Side.BUY else self.asks
+        queue = book_side[price]
+        queue.remove(order)
+        if not queue:
+            del book_side[price]
+        del self.orders[o_id]
+
     def cancel(self, order_id):
         if order_id not in self.orders:
-            raise KeyError
-        else:
-            order = self.orders.pop(order_id)
-            price, side, qty = order.price, order.side, order.qty
-            book_side = self.bids if side is Side.BUY else self.asks
-            queue = book_side[price]
-            queue.remove(order)
-            if not queue:
-                del book_side[price]
-            return qty
+            raise KeyError(f"unknown order id {order_id}")
+        order = self.orders[order_id]
+        self._remove(order)
+        return order.qty
 
     def queue_ahead(self, order_id):
         if order_id not in self.orders:
@@ -122,3 +124,24 @@ class LimitOrderBook:
             for p in prices:
                 tot_qty += sum(o.qty for o in book_side[p])
             return tot_qty
+
+    def _match(self, side, limit_price, qty):
+        fills = []
+        opposite = self.asks if side is Side.BUY else self.bids
+
+        while qty > 0:
+            best = self.best_ask() if side is Side.BUY else self.best_bid()
+            if best is None:
+                break
+            if (side is Side.BUY and best > limit_price) or (side is Side.SELL and best < limit_price):
+                break
+            queue = opposite[best]
+            while queue and qty > 0:
+                order = queue[0]
+                executed_qty = min(qty, order.qty)
+                fills.append(Fill(order.id, best, executed_qty, order.is_mine))
+                qty -= executed_qty
+                order.qty -= executed_qty
+                if order.qty == 0:
+                    self._remove(order)
+        return qty, fills

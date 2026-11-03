@@ -10,4 +10,6 @@
 
 ## D3 — Book invariants are enforced by construction in the matching logic and verified by check_invariants() in randomized tests, never checked at runtime in hot paths.
 
-## D4 - In the function `cancel` the line `queue.remove(order)` takes O(n). Might need later optimimization in case of long queues. 
+## D4 - In the function `cancel` the line `queue.remove(order)` takes O(n). Might need later optimimization in case of long queues.
+
+## D5 - `_remove` is the mechanical removal of an order (private function), while `cancel` is used for withdrawn orders.
