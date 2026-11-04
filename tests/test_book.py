@@ -181,3 +181,10 @@ def test_repr_shows_top_levels_and_handles_empty_book():
     assert "100 x 50 (2)" in r
     assert "102 x 10 (1)" in r
     assert "bid/ask 100/102" in r
+
+def test_float_quantity_is_rejected():
+    b = LimitOrderBook()
+    with pytest.raises(ValueError):
+        b.add_limit(Side.BUY, 100, 10.0)
+    with pytest.raises(ValueError):
+        b.add_market(Side.SELL, 10.0)

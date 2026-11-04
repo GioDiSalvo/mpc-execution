@@ -69,8 +69,8 @@ class LimitOrderBook:
         Returns the number of non filled shares and the list of fills.
         Raises ValueError if qty <= 0.
         """
-        if qty <= 0:
-            raise ValueError("quantity must be positive")
+        if qty <= 0 or not isinstance(qty, int):
+            raise ValueError("quantity must be positive and integer")
         limit = float("inf") if side is Side.BUY else float("-inf")
         return self._match(side, limit, qty) 
 
@@ -79,8 +79,8 @@ class LimitOrderBook:
         Execute the marketable part against the opposite side, then rest the residual in the book.
         Returns (order_id, fills); order_id is None if nothing rested.
         """
-        if qty <= 0:
-            raise ValueError("quantity must be positive")
+        if qty <= 0 or not isinstance(qty, int):
+            raise ValueError("quantity must be positive and integer")
 
         residual, fills = self._match(side, price, qty)
         if residual == 0:
