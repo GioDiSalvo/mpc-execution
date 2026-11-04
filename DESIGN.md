@@ -33,3 +33,8 @@
 ## D8 — Market orders carry an unbounded limit
 **Decision.** `add_market` calls `_match` with `+inf` for buys and `-inf` for sells.
 **Why.** One matching routine for both order types. The residual of a market order with insufficient liquidity is returned, not resting.
+
+## D9 — Limit-order distances are measured from the opposite best quote
+**Decision.** A new buy limit order at distance `d` is placed at `best_ask - d`; a new sell at `best_bid + d`, for `d = 1..K`. Cancellation rates use the same indexing. (Cont–Stoikov–Talreja convention.)
+**Why.** With `d < spread` the order lands inside the spread and improves the best quote, so the spread can close on its own after a level is emptied. Measuring from the same-side best would only ever add depth behind the best, and the spread could widen but never narrow.
+**Consequence.** `_level_price(side, d)` is the single place that implements this arithmetic; both `_rates` and `_next_event` use it. The number of levels `K` must exceed the spread for every distance to be a valid price. The seed populates distances 2..K so that the seeded levels coincide with those _rates observes; distance 1 (inside the initial spread) starts empty.”
