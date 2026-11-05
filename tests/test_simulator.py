@@ -1,4 +1,5 @@
 from mpc_execution.simulator import Simulator, SimParams
+from mpc_execution.book import Side
 import numpy as np
 import pytest
 
@@ -56,3 +57,68 @@ def test_cancellation_rate_is_zero_on_an_empty_level():
     rates = sim._rates()
     assert rates[2 * p.K + 2] == 0        # index of "cancel bid, d = 3"
     assert rates[2 * p.K + 1] > 0         # d = 2 untouched
+
+def test_single_event_keeps_book_consistent():
+    sim = Simulator(SimParams(), seed=0)
+    tau = sim._next_event()
+    assert tau > 0 and sim.t == tau
+    sim.book.check_invariants()
+
+def test_many_events_keep_book_populated():
+    sim = Simulator(SimParams(), seed=1)
+    for _ in range(10_000):
+        sim._next_event()
+        sim.book.check_invariants()
+        assert sim.book.best_bid() is not None and sim.book.best_ask() is not None
+        assert sim.book.spread() >= 1
+
+def test_mid_moves():
+    sim = Simulator(SimParams(), seed=3)
+    mids = set()
+    for _ in range(20_000):
+        sim._next_event()
+        mids.add(sim.book.mid())
+    assert len(mids) > 1
+
+def test_same_seed_same_trajectory():
+    sim1, sim2 = Simulator(SimParams(), seed=7), Simulator(SimParams(), seed=7)
+    for _ in range(1000):
+        sim1._next_event()
+        sim2._next_event()
+        assert repr(sim1.book) == repr(sim2.book) and sim1.t == sim2.t
+
+def test_apply_event_touches_the_right_side():
+    p = SimParams()
+    K = p.K
+
+    sim = Simulator(p, seed=0)
+    before = sim._depth(Side.BUY)
+    sim._apply_event(0)                       # limit buy, d = 1: inside the spread
+    assert sim._depth(Side.BUY) > before
+    assert sim.book.best_bid() == p.mid0      # D9: best_ask - 1
+
+    sim = Simulator(p, seed=0)
+    before = sim._depth(Side.SELL)
+    sim._apply_event(K)                       # limit sell, d = 1
+    assert sim._depth(Side.SELL) > before
+
+    sim = Simulator(p, seed=0)
+    before = sim._depth(Side.BUY)
+    sim._apply_event(2 * K + 1)               # cancel bid, d = 2: the seeded best bid
+    assert sim._depth(Side.BUY) < before
+    assert sim._depth(Side.SELL) == Simulator(p, seed=0)._depth(Side.SELL)
+
+    sim = Simulator(p, seed=0)
+    before = sim._depth(Side.SELL)
+    sim._apply_event(3 * K + 1)               # cancel ask, d = 2
+    assert sim._depth(Side.SELL) < before
+
+    sim = Simulator(p, seed=0)
+    before = sim._depth(Side.SELL)
+    sim._apply_event(4 * K)                   # market buy consumes asks
+    assert sim._depth(Side.SELL) < before
+
+    sim = Simulator(p, seed=0)
+    before = sim._depth(Side.BUY)
+    sim._apply_event(4 * K + 1)               # market sell consumes bids
+    assert sim._depth(Side.BUY) < before
