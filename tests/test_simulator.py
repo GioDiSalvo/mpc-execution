@@ -126,3 +126,74 @@ def test_apply_event_touches_the_right_side():
     before = sim._depth(Side.BUY)
     sim._apply_event(4 * K + 1)               # market sell consumes bids
     assert sim._depth(Side.BUY) < before
+
+def test_step_advances_the_clock_exactly():
+    sim = Simulator(SimParams(), seed=0)
+    t0 = sim.t
+    sim.step(2.5)
+    assert sim.t == pytest.approx(t0 + 2.5)
+    sim.book.check_invariants()
+
+def test_market_order_executes_immediately():
+    sim = Simulator(SimParams(), seed=0)
+    ask = sim.book.best_ask()
+    residual, execs = sim.place_market(Side.BUY, 10)
+    assert residual == 0
+    assert sum(e.qty for e in execs) == 10
+    assert all(e.side is Side.BUY and not e.passive and e.price >= ask for e in execs)
+    assert sim.my_orders == set()
+
+def test_resting_bid_at_the_best_gets_filled_by_the_flow():
+    sim = Simulator(SimParams(), seed=0)
+    price = sim.book.best_bid()
+    oid, execs = sim.place_limit(Side.BUY, price, 20)
+    assert oid in sim.my_orders and execs == []
+    for _ in range(500):
+        execs += sim.step(1.0)
+        if oid not in sim.my_orders:
+            break
+    assert oid not in sim.my_orders, "never filled"
+    assert sum(e.qty for e in execs) == 20
+    assert all(e.passive and e.side is Side.BUY and e.price == price for e in execs)
+
+def test_resting_bid_far_from_the_best_is_rarely_filled():
+    filled = 0
+    for seed in range(5):
+        sim = Simulator(SimParams(), seed=seed)
+        oid, _ = sim.place_limit(Side.BUY, sim.book.best_bid() - 8, 20)
+        execs = []
+        for _ in range(100):
+            execs += sim.step(1.0)
+        filled += sum(e.qty for e in execs)
+    assert filled < 0.2 * 5 * 20
+
+def test_flow_never_cancels_my_orders():
+    sim = Simulator(SimParams(), seed=1)
+    oid, _ = sim.place_limit(Side.SELL, sim.book.best_ask() + 2, 30)
+    execs = []
+    for _ in range(300):
+        execs += sim.step(1.0)
+    still_resting = oid in sim.my_orders
+    executed = sum(e.qty for e in execs)
+    assert (still_resting and executed < 30) or (not still_resting and executed == 30)
+
+def test_cancel_mine_removes_the_order():
+    sim = Simulator(SimParams(), seed=0)
+    oid, _ = sim.place_limit(Side.BUY, sim.book.best_bid() - 1, 15)
+    assert sim.cancel_mine(oid) == 15
+    assert oid not in sim.my_orders and oid not in sim.book.orders
+    with pytest.raises(KeyError):
+        sim.cancel_mine(oid)
+
+def test_snapshot_is_consistent_with_the_book():
+    sim = Simulator(SimParams(), seed=0)
+    sim.step(5.0)
+    oid, _ = sim.place_limit(Side.BUY, sim.book.best_bid(), 7)
+    s = sim.snapshot()
+    b = sim.book
+    assert s.best_bid == b.best_bid() and s.best_ask == b.best_ask()
+    assert s.bid_depth[0] == sum(o.qty for o in b.bids[s.best_bid])
+    assert s.ask_depth[0] == sum(o.qty for o in b.asks[s.best_ask])
+    assert -1 <= s.imbalance <= 1
+    side, price, qty, ahead = s.my_orders[oid]
+    assert side is Side.BUY and price == s.best_bid and qty == 7 and ahead == b.queue_ahead(oid)

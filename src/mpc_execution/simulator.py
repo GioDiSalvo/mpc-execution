@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import numpy as np
-from mpc_execution.book import LimitOrderBook, Side
+from mpc_execution.book import LimitOrderBook, Side, Fill
 from enum import IntEnum
 
 class Block(IntEnum):
@@ -8,6 +8,28 @@ class Block(IntEnum):
     LIMIT_SELL = 1
     CANCEL_BID = 2
     CANCEL_ASK = 3
+
+@dataclass(frozen=True)
+class Execution:
+    """One execution of OURS, in either direction (D16)."""
+    t: float
+    side: Side        # our side: BUY if we bought
+    price: int        # price actually traded (the resting order's price, D7)
+    qty: int
+    passive: bool     # True: our resting order was hit by the flow. False: we crossed the spread.
+
+@dataclass
+class BookState:
+    """What a policy observes at a decision time (D15)."""
+    t: float
+    mid: float
+    spread: int
+    best_bid: int
+    best_ask: int
+    bid_depth: np.ndarray    # shape (K,): shares at best_bid, best_bid-1, ..., best_bid-(K-1)
+    ask_depth: np.ndarray    # shape (K,): shares at best_ask, best_ask+1, ..., best_ask+(K-1),
+    imbalance: float         # (sum(bid_depth[:3]) - sum(ask_depth[:3])) / (sum of both), in [-1, 1]
+    my_orders: dict[int, tuple[Side, int, int, int]]   # id -> (side, price, remaining qty, queue_ahead)
 
 @dataclass
 class SimParams:
@@ -39,6 +61,8 @@ class Simulator:
         self.MARKET_BUY = 4 * self.p.K
         self.MARKET_SELL = 4 * self.p.K + 1
         self._seed_book()   # initialization of the book
+        self.my_orders: set[int] = set()          # ids of our resting orders
+        self._executions: list[Execution] = []    # passive executions since the last step()
 
     def _seed_book(self):
         for d in range(2, self.p.K + 1):
@@ -94,19 +118,27 @@ class Simulator:
         book_side = self.book.bids if side is Side.BUY else self.book.asks
         return sum(o.qty for queue in book_side.values() for o in queue)
 
+    def _record_passive_fills(self, fills: list[Fill], aggressor: Side) -> None:
+        """Fills of OUR resting orders hit by a flow order on side `aggressor`."""
+        for f in fills:
+            if f.is_mine:
+                self._executions.append(Execution(self.t, Side(-aggressor.value), f.price, f.qty, passive=True))
+
     def _apply_event(self, e):
         K = self.p.K
         if e >= 4 * K:
             side = Side.BUY if e == self.MARKET_BUY else Side.SELL
             qty = self._draw_qty()
-            self.book.add_market(side, qty)
+            _, fills = self.book.add_market(side, qty)
+            self._record_passive_fills(fills, side)
         else:
             block, d = divmod(e, K) # d ranges in 0,...,K-1
             block = Block(block)
             if block in (Block.LIMIT_BUY, Block.LIMIT_SELL):
                 qty = self._draw_qty()
                 side = Side.BUY if block is Block.LIMIT_BUY else Side.SELL
-                self.book.add_limit(side, self._level_price(side, d + 1), qty)
+                _, fills = self.book.add_limit(side, self._level_price(side, d + 1), qty)
+                self._record_passive_fills(fills, side)
             else:
                 side = Side.BUY if block is Block.CANCEL_BID else Side.SELL
                 book_side = self.book.bids if block is Block.CANCEL_BID else self.book.asks
@@ -126,15 +158,90 @@ class Simulator:
                 self.book.add_limit(side, price, self.p.floor)
                 self.n_floor_events += 1
 
-    def _next_event(self):
+    def _next_event(self, t_max: float | None = None) -> float | None:
         """Draw the next event (Gillespie), apply it to the book, advance the clock.
         Returns the waiting time tau."""
         rates = self._rates()
         Lambda = rates.sum()
         tau = self.rng.exponential(1 / Lambda) # time to next event
-        probabilities = rates / Lambda
-        e = self.rng.choice(len(rates), p=probabilities) # index of next event
-        self._apply_event(e)
-        self._apply_floor()
-        self.t += tau       # move simulator's clock
-        return tau
+        if t_max is not None and self.t + tau > t_max:
+            self.t = t_max
+            return None
+        else:
+            probabilities = rates / Lambda
+            e = self.rng.choice(len(rates), p=probabilities) # index of next event
+            self._apply_event(e)
+            self._apply_floor()
+            self.t += tau       # move simulator's clock
+            return tau
+
+    def place_limit(self, side: Side, price: int, qty: int) -> tuple[int | None, list[Execution]]:
+        """Send our limit order. Returns (resting order id or None, executions of the marketable part)."""
+        order_id, fills = self.book.add_limit(side, price, qty, is_mine=True)
+        if order_id is not None:
+            self.my_orders.add(order_id)
+        executions = []
+        for f in fills:
+            executions.append(Execution(self.t, side, f.price, f.qty, passive=False))
+        return order_id, executions
+
+    def place_market(self, side: Side, qty: int) -> tuple[int, list[Execution]]:
+        """Send our market order. Returns (unfilled residual, executions)."""
+        unfilled_residual_qty, fills = self.book.add_market(side, qty)
+        executions = []
+        for f in fills:
+            executions.append(Execution(self.t, side, f.price, f.qty, passive=False))
+        return unfilled_residual_qty, executions
+
+    def cancel_mine(self, order_id: int) -> int:
+        """Withdraw one of our resting orders. Returns the cancelled qty. KeyError if not ours."""
+        if order_id not in self.my_orders:
+            raise KeyError(f"order {order_id} not in self.my_orders")
+        cancelled_qty = self.book.cancel(order_id)
+        self.my_orders.remove(order_id)
+        return cancelled_qty
+
+    def cancel_all_mine(self) -> int:
+        """Withdraw all our resting orders. Returns the total cancelled qty."""
+        tot_cancelled_qty = 0
+        for o in list(self.my_orders):
+            tot_cancelled_qty += self.cancel_mine(o)
+        return tot_cancelled_qty
+
+    def step(self, dt: float) -> list[Execution]:
+        """Let the flow run for dt. Returns the passive executions of our orders in the interval."""
+        t_end = self.t + dt
+        while self._next_event(t_max=t_end) is not None:
+            pass
+        executions, self._executions = self._executions, []
+        self.my_orders &= self.book.orders.keys()       # orders fully executed have left the book
+        return executions
+
+    def snapshot(self) -> BookState:
+        """What a policy observes now (D15): depth from the own-side best, our resting orders with queue position."""
+        K = self.p.K
+        assert K >= 3,"imbalance uses 3 levels, so K must be >= {3}, but is currently K={K}."
+        b = self.book
+        best_bid, best_ask = b.best_bid(), b.best_ask()
+        assert best_bid is not None and best_ask is not None, "floor should keep both sides populated"
+
+        bid_depth = np.zeros(K, dtype=int)
+        ask_depth = np.zeros(K, dtype=int)
+        for k in range(K):
+            q_bid = b.bids.get(best_bid - k)
+            q_ask = b.asks.get(best_ask + k)
+            bid_depth[k] = sum(o.qty for o in q_bid) if q_bid else 0
+            ask_depth[k] = sum(o.qty for o in q_ask) if q_ask else 0
+
+        top_bid, top_ask = bid_depth[:3].sum(), ask_depth[:3].sum()
+        imbalance = (top_bid - top_ask) / (top_bid + top_ask)
+
+        my_orders = {}
+        for oid in self.my_orders:
+            o = b.orders[oid]
+            my_orders[oid] = (o.side, o.price, o.qty, b.queue_ahead(oid))
+
+        return BookState(
+            t=self.t, mid=b.mid(), spread=b.spread(), best_bid=best_bid, best_ask=best_ask,
+            bid_depth=bid_depth, ask_depth=ask_depth, imbalance=imbalance, my_orders=my_orders,
+        )

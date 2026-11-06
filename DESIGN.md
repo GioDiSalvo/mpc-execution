@@ -58,3 +58,18 @@
 **Decision.** `lambda0 = 2, alpha = 1.2, theta = 0.2, mu = 1.0, qty_mean = 50, K = 10, floor = 100`.
 **Why.** Chosen in `notebooks/01_book_sanity.ipynb` from a grid over `theta`, `mu`, `alpha`. Target: a liquid stock. With these values (3 seeds, 50k events): spread = 1 tick 95 % of the time; 2.2–2.5 mid changes per 100 events; ≈ 275 shares at the best, ≈ 33 at distance 10; floor triggered 1–4 times per run. `theta = 0.02` (CST-like per-share value reinterpreted per order) gives a frozen book; `mu ≥ 2` empties it.
 **Consequence.** `SimParams()` is this configuration everywhere (tests, experiments). Time unit: ≈ 20 events per unit of simulated time.
+
+## D14 — `step(dt)` ends exactly at `t + dt`
+**Decision.** `step(dt)` runs Gillespie events until the next drawn waiting time would overshoot `t + dt`; that event is discarded and the clock is set to `t + dt`. Implemented as `_next_event(t_max)`, which returns `None` when it truncates.
+**Why.** Decision times must be equally spaced for the execution algorithm. Discarding the overshooting draw is exact, not an approximation: the exponential is memoryless, so the residual time to the next event, conditional on none having occurred by `t + dt`, is again exponential with the same rate.
+**Consequence.** No event ever straddles two steps. The floor (D12) is applied after each applied event, never after a truncation.
+
+## D15 — Snapshot depth is indexed from the own-side best
+**Decision.** `BookState.bid_depth[k]` is the total quantity (ours included) at `best_bid - k`, `ask_depth[k]` at `best_ask + k`, for `k = 0..K-1`; `imbalance` uses the first three levels of each side. Rates keep the D9 convention (distance from the opposite best).
+**Why.** Two different consumers. The flow model needs distances measured as in Cont–Stoikov–Talreja; a policy or a fill model sees the book as a trader does, from its own best quote. Keeping both explicit avoids off-by-one errors between the two.
+**Consequence.** `_level_qty` / `_level_count` serve rates and diagnostics; `snapshot()` serves policies. `K >= 3` is required by the imbalance.
+
+## D16 — Executions are reported from our point of view
+**Decision.** `Execution(t, side, price, qty, passive)` records our side, the price actually traded (the resting order's price, D7) and whether we were passive (our resting order hit by the flow) or aggressive (we crossed the spread). Aggressive executions are returned immediately by `place_limit` / `place_market`; passive ones are buffered and returned by the next `step()`.
+**Why.** A book `Fill` describes the resting order (its id and owner), which is the wrong point of view for our accounting: for an aggressive order the resting order is not ours. Metrics need our side and the time, which a `Fill` does not carry.
+**Consequence.** The flow never cancels our orders (D11); only `cancel_mine` / `cancel_all_mine` do. `my_orders` is re-synchronised with the book at the end of every `step`, because fully executed orders leave the book.
