@@ -53,3 +53,8 @@
 **Decision.** After every event, each side whose total depth is below `floor` receives one order of size `floor` at distance `K + 1` from the opposite best. The number of interventions is counted in `n_floor_events`.
 **Why.** The CST model has finitely many levels and can empty a side by a run of market orders and cancellations; an empty side leaves the mid undefined and the algorithm cannot run. In real markets there is always liquidity at some price.
 **Consequence.** `n_floor_events` is a diagnostic: a well-parameterised simulation triggers the floor rarely. Both sides below threshold with one of them empty is unreachable by design and guarded by an assertion.
+
+## D13 — Default order-flow parameters
+**Decision.** `lambda0 = 2, alpha = 1.2, theta = 0.2, mu = 1.0, qty_mean = 50, K = 10, floor = 100`.
+**Why.** Chosen in `notebooks/01_book_sanity.ipynb` from a grid over `theta`, `mu`, `alpha`. Target: a liquid stock. With these values (3 seeds, 50k events): spread = 1 tick 95 % of the time; 2.2–2.5 mid changes per 100 events; ≈ 275 shares at the best, ≈ 33 at distance 10; floor triggered 1–4 times per run. `theta = 0.02` (CST-like per-share value reinterpreted per order) gives a frozen book; `mu ≥ 2` empties it.
+**Consequence.** `SimParams()` is this configuration everywhere (tests, experiments). Time unit: ≈ 20 events per unit of simulated time.

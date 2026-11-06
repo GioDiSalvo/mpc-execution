@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from collections import deque
 from enum import Enum
+from numbers import Integral
 
 class Side(Enum):
     BUY = 1
@@ -63,23 +64,23 @@ class LimitOrderBook:
             return None
         return (bid + ask) / 2
 
-    def add_market(self, side, qty):
+    def add_market(self, side: Side, qty: int):
         """
-        Execute a mrket order.
+        Execute a market order.
         Returns the number of non filled shares and the list of fills.
         Raises ValueError if qty <= 0.
         """
-        if qty <= 0 or not isinstance(qty, int):
+        if qty <= 0 or not isinstance(qty, Integral):
             raise ValueError("quantity must be positive and integer")
         limit = float("inf") if side is Side.BUY else float("-inf")
         return self._match(side, limit, qty) 
 
-    def add_limit(self, side, price, qty, is_mine = False):
+    def add_limit(self, side: Side, price: int, qty: int, is_mine: bool = False):
         """
         Execute the marketable part against the opposite side, then rest the residual in the book.
         Returns (order_id, fills); order_id is None if nothing rested.
         """
-        if qty <= 0 or not isinstance(qty, int):
+        if qty <= 0 or not isinstance(qty, Integral):
             raise ValueError("quantity must be positive and integer")
 
         residual, fills = self._match(side, price, qty)
@@ -121,7 +122,7 @@ class LimitOrderBook:
             del book_side[price]
         del self.orders[o_id]
 
-    def cancel(self, order_id):
+    def cancel(self, order_id: int):
         """
         Withdraw a resting order.
         Returns the cancelled quantity.
@@ -133,37 +134,36 @@ class LimitOrderBook:
         self._remove(order)
         return order.qty
 
-    def queue_ahead(self, order_id):
+    def queue_ahead(self, order_id: int):
         """
         Returns the amount of shares related to orders at better price and to earlier orders at same price.
         Raises KeyError if the id is unknown.
         """
         if order_id not in self.orders:
-            raise KeyError
+            raise KeyError(f"unknown order id {order_id}")
+        tot_qty = 0
+        order = self.orders[order_id]
+        price, side = order.price, order.side
+
+        if side is Side.BUY:
+            book_side = self.bids
+            prices = [p for p in book_side if p > price]
         else:
-            tot_qty = 0
-            order = self.orders[order_id]
-            price, side = order.price, order.side
+            book_side = self.asks
+            prices = [p for p in book_side if p < price]
 
-            if side is Side.BUY:
-                book_side = self.bids
-                prices = [p for p in book_side if p > price]
-            else:
-                book_side = self.asks
-                prices = [p for p in book_side if p < price]
+        ahead_same_level = 0
+        for o in book_side[price]:
+            if o.id == order_id:
+                break
+            ahead_same_level += o.qty
 
-            ahead_same_level = 0
-            for o in book_side[price]:
-                if o.id == order_id:
-                    break
-                ahead_same_level += o.qty
+        tot_qty += ahead_same_level
+        for p in prices:
+            tot_qty += sum(o.qty for o in book_side[p])
+        return tot_qty
 
-            tot_qty += ahead_same_level
-            for p in prices:
-                tot_qty += sum(o.qty for o in book_side[p])
-            return tot_qty
-
-    def _match(self, side, limit_price, qty):
+    def _match(self, side: Side, limit_price: int, qty: int):
         """
         Execute qty against the opposite side, level by level from the best, while the level price is within limit_price.
         Fills occur at the resting order’s price.

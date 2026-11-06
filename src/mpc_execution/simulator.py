@@ -18,8 +18,8 @@ class SimParams:
     """
     K: int = 10           # price levels per side beyond the best (distances 1 ... K)
     lambda0: float = 2.0    # limit-order arrival rate at distance 1
-    alpha: float = 1.5      # power-law decay of arrivals with distance
-    theta: float = 0.02     # cancellation rate per share
+    alpha: float = 1.2      # power-law decay of arrivals with distance
+    theta: float = 0.2     # cancellation rate per resting order
     mu: float = 1.0         # market-order rate per side (neutral regime)
     qty_mean: float = 50.0  # mean order size
     mid0: int = 10_000    # initial mid price, in ticks
@@ -35,16 +35,18 @@ class Simulator:
         self.rng = np.random.default_rng(seed)
         self.book = LimitOrderBook()
         self.t = 0.0        # it's the simulator's clock
-        self._seed_book()   # initialization of the book
         self.n_floor_events: int = 0 # counter for empty book
         self.MARKET_BUY = 4 * self.p.K
         self.MARKET_SELL = 4 * self.p.K + 1
+        self._seed_book()   # initialization of the book
 
     def _seed_book(self):
         for d in range(2, self.p.K + 1):
-            qty = max(1, round(self.p.lam(d) * self.p.qty_mean / self.p.theta))
-            self.book.add_limit(Side.BUY, self.p.mid0 + 1 - d, qty)
-            self.book.add_limit(Side.SELL, self.p.mid0 - 1 + d, qty)
+            n = max(1, round(self.p.lam(d) / self.p.theta))
+            qty = round(self.p.qty_mean)
+            for _ in range(n):
+                self.book.add_limit(Side.BUY, self.p.mid0 + 1 - d, qty)
+                self.book.add_limit(Side.SELL, self.p.mid0 - 1 + d, qty)
 
     def _level_price(self, side, d):
         'Price at distance d from the opposite best quote.'
@@ -56,24 +58,32 @@ class Simulator:
         return ref + sign * d
 
     def _level_qty(self, side, d):
+        """Tot qty in all resting orders at distance d that the flow may cancel (ours included)."""
         book_side = self.book.bids if side is Side.BUY else self.book.asks
         price = self._level_price(side, d)
         queue = book_side.get(price)
         return sum(o.qty for o in queue) if queue else 0
+
+    def _level_count(self, side, d):
+        """Number of resting orders at distance d that the flow may cancel (ours excluded)."""
+        book_side = self.book.bids if side is Side.BUY else self.book.asks
+        price = self._level_price(side, d)
+        queue = book_side.get(price)
+        return sum(1 for o in queue if not o.is_mine) if queue else 0
 
     def _rates(self):
         """
         Returns a 4K+2-dim array, describes the occurance rate of an event at distance d from the best of the opposite side:
         - buy limit orders (lam(d), for d = 1,...,K);
         - sell limit orders (lam(d), for d = 1,...,K);
-        - buy cancellation (theta(d) * Q_d, for d = 1,...,K where Q_d is the queue size at level d for the buy);
-        - sell cancellation (theta(d) * Q_d, for d = 1,...,K where Q_d is the queue size at level d for the sell);
+        - buy cancellation (theta(d) * Q_d, for d = 1,...,K where Q_d is the queue size -number of orders- at level d for the buy, ours excluded);
+        - sell cancellation (theta(d) * Q_d, for d = 1,...,K where Q_d is the queue size -number of orders- at level d for the sell, ours excluded);
         - the two final entries are buy market orders pressure vs sell market order pressure.
         """
         ds = np.arange(1, self.p.K + 1)
         lam = self.p.lam(ds)
-        cancel_bid = self.p.theta * np.array([self._level_qty(Side.BUY, d) for d in ds])
-        cancel_ask = self.p.theta * np.array([self._level_qty(Side.SELL, d) for d in ds])
+        cancel_bid = self.p.theta * np.array([self._level_count(Side.BUY, d) for d in ds])
+        cancel_ask = self.p.theta * np.array([self._level_count(Side.SELL, d) for d in ds])
         return np.concatenate([lam, lam, cancel_bid, cancel_ask, [self.p.mu], [self.p.mu]])
 
     def _draw_qty(self):
@@ -99,13 +109,12 @@ class Simulator:
                 self.book.add_limit(side, self._level_price(side, d + 1), qty)
             else:
                 side = Side.BUY if block is Block.CANCEL_BID else Side.SELL
-                book_side = self.book.bids if block == 2 else self.book.asks
+                book_side = self.book.bids if block is Block.CANCEL_BID else self.book.asks
                 price = self._level_price(side, d + 1)
                 queue = book_side.get(price)
                 candidates = [o for o in queue if not o.is_mine] if queue else []
                 if candidates:
-                    weights = np.array([o.qty for o in candidates], dtype=float)
-                    victim = self.rng.choice(len(candidates), p=weights/weights.sum())
+                    victim = self.rng.choice(len(candidates))
                     self.book.cancel(candidates[victim].id)
 
     def _apply_floor(self):
@@ -120,7 +129,7 @@ class Simulator:
     def _next_event(self):
         """Draw the next event (Gillespie), apply it to the book, advance the clock.
         Returns the waiting time tau."""
-        K, rates = self.p.K, self._rates()
+        rates = self._rates()
         Lambda = rates.sum()
         tau = self.rng.exponential(1 / Lambda) # time to next event
         probabilities = rates / Lambda

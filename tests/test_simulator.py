@@ -4,13 +4,14 @@ import numpy as np
 import pytest
 
 def test_seeded_book_is_consistent():
-    sim = Simulator(SimParams(), seed = 0)
+    p = SimParams()
+    sim = Simulator(p, seed = 0)
     b = sim.book
     b.check_invariants()
-    assert b.best_bid() == SimParams().mid0 - 1
-    assert b.best_ask() == SimParams().mid0 + 1
+    assert b.best_bid() == p.mid0 - 1
+    assert b.best_ask() == p.mid0 + 1
     assert b.spread() == 2
-    assert len(b.bids) == SimParams.K - 1 and len(b.asks) == SimParams.K - 1
+    assert len(b.bids) == p.K - 1 and len(b.asks) == p.K - 1
 
 def test_seeded_depth_decreases_with_distance():
     sim = Simulator(SimParams(), seed = 0)
@@ -27,7 +28,7 @@ def test_same_seed_same_book():
 
 def test_params_are_overridable():
     p = SimParams(K=3, mu=0.5)
-    assert p.K == 3 and p.mu == 0.5 and p.alpha == 1.5
+    assert p.K == 3 and p.mu == 0.5 and p.alpha == 1.2
 
 def test_rates_have_the_right_shape_and_values():
     p = SimParams()
@@ -42,18 +43,16 @@ def test_rates_have_the_right_shape_and_values():
         if d == 1:
             assert rates[2 * K] == 0 and rates[3 * K] == 0     # inside the spread: empty
             continue
-        qty_bids = sum(o.qty for o in b.bids[p.mid0 + 1 - d])
-        qty_asks = sum(o.qty for o in b.asks[p.mid0 - 1 + d])
-        assert rates[d + 2 * K - 1] == pytest.approx(p.theta * qty_bids)
-        assert rates[d + 3 * K - 1] == pytest.approx(p.theta * qty_asks)
+        assert rates[d + 2 * K - 1] == pytest.approx(p.theta * len(b.bids[p.mid0 + 1 - d]))
+        assert rates[d + 3 * K - 1] == pytest.approx(p.theta * len(b.asks[p.mid0 - 1 + d]))
     assert rates[-1] == rates[-2] == p.mu
 
 def test_cancellation_rate_is_zero_on_an_empty_level():
     p = SimParams()
     sim = Simulator(p, seed=0)
     b = sim.book
-    oid = b.bids[p.mid0 - 2][0].id        # the single seeded order at distance 3 (D9: from best ask)
-    b.cancel(oid)
+    for o in list(b.bids[p.mid0 - 2]):    # the seeded orders at distance 3 (D9: from best ask)
+        b.cancel(o.id)
     rates = sim._rates()
     assert rates[2 * p.K + 2] == 0        # index of "cancel bid, d = 3"
     assert rates[2 * p.K + 1] > 0         # d = 2 untouched
@@ -72,13 +71,18 @@ def test_many_events_keep_book_populated():
         assert sim.book.best_bid() is not None and sim.book.best_ask() is not None
         assert sim.book.spread() >= 1
 
-def test_mid_moves():
+def test_default_book_is_alive():
+    """The default parameters must give a book whose mid keeps moving after the seed is forgotten."""
     sim = Simulator(SimParams(), seed=3)
-    mids = set()
+    for _ in range(5_000):     # burn-in: spread shrinks to tick and seed is forgotten
+        sim._next_event()
+    changes, prev = 0, sim.book.mid()
     for _ in range(20_000):
         sim._next_event()
-        mids.add(sim.book.mid())
-    assert len(mids) > 1
+        if sim.book.mid() != prev:
+            changes += 1
+            prev = sim.book.mid()
+    assert changes > 50          # observed ≈ 450 with the chosen defaults
 
 def test_same_seed_same_trajectory():
     sim1, sim2 = Simulator(SimParams(), seed=7), Simulator(SimParams(), seed=7)
