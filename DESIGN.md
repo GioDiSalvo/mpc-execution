@@ -73,3 +73,8 @@
 **Decision.** `Execution(t, side, price, qty, passive)` records our side, the price actually traded (the resting order's price, D7) and whether we were passive (our resting order hit by the flow) or aggressive (we crossed the spread). Aggressive executions are returned immediately by `place_limit` / `place_market`; passive ones are buffered and returned by the next `step()`.
 **Why.** A book `Fill` describes the resting order (its id and owner), which is the wrong point of view for our accounting: for an aggressive order the resting order is not ours. Metrics need our side and the time, which a `Fill` does not carry.
 **Consequence.** The flow never cancels our orders (D11); only `cancel_mine` / `cancel_all_mine` do. `my_orders` is re-synchronised with the book at the end of every `step`, because fully executed orders leave the book.
+
+## D19 — The simulated flow has no intraday profile, so VWAP coincides with TWAP
+**Decision.** All rates in `SimParams` are constant in time. The expected market volume is therefore linear in time, and `from_volume_profile` with the simulator's own volume reduces to `twap`.
+**Why.** Intraday seasonality (the U-shaped volume curve) is a separate modelling choice with its own parameters; it is not needed to study fill probabilities and schedule following.
+**Consequence.** Experiments use TWAP and Almgren–Chriss as schedules. `from_volume_profile` is implemented and tested so that a time-varying `mu(t)` can be added later without touching the execution code. The paper's TWAP/VWAP distinction cannot be reproduced here.
