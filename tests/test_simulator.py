@@ -138,6 +138,7 @@ def test_market_order_executes_immediately():
     sim = Simulator(SimParams(), seed=0)
     ask = sim.book.best_ask()
     residual, execs = sim.place_market(Side.BUY, 10)
+    assert sum(q for _, _, q in sim.trades) == 10
     assert residual == 0
     assert sum(e.qty for e in execs) == 10
     assert all(e.side is Side.BUY and not e.passive and e.price >= ask for e in execs)
@@ -160,7 +161,7 @@ def test_resting_bid_far_from_the_best_is_rarely_filled():
     filled = 0
     for seed in range(5):
         sim = Simulator(SimParams(), seed=seed)
-        oid, _ = sim.place_limit(Side.BUY, sim.book.best_bid() - 8, 20)
+        sim.place_limit(Side.BUY, sim.book.best_bid() - 8, 20)
         execs = []
         for _ in range(100):
             execs += sim.step(1.0)
@@ -197,3 +198,9 @@ def test_snapshot_is_consistent_with_the_book():
     assert -1 <= s.imbalance <= 1
     side, price, qty, ahead = s.my_orders[oid]
     assert side is Side.BUY and price == s.best_bid and qty == 7 and ahead == b.queue_ahead(oid)
+
+def test_market_order_is_recorded_as_trades():
+    sim = Simulator(SimParams(), seed=0)
+    n0 = len(sim.trades)
+    residual, _ = sim.place_market(Side.BUY, 30)
+    assert sum(q for _, _, q in sim.trades[n0:]) == 30 - residual

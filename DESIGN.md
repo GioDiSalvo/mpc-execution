@@ -73,3 +73,18 @@
 **Decision.** `Execution(t, side, price, qty, passive)` records our side, the price actually traded (the resting order's price, D7) and whether we were passive (our resting order hit by the flow) or aggressive (we crossed the spread). Aggressive executions are returned immediately by `place_limit` / `place_market`; passive ones are buffered and returned by the next `step()`.
 **Why.** A book `Fill` describes the resting order (its id and owner), which is the wrong point of view for our accounting: for an aggressive order the resting order is not ours. Metrics need our side and the time, which a `Fill` does not carry.
 **Consequence.** The flow never cancels our orders (D11); only `cancel_mine` / `cancel_all_mine` do. `my_orders` is re-synchronised with the book at the end of every `step`, because fully executed orders leave the book.
+
+## D17 — Our orders live exactly one decision step
+**Decision.** At each decision time the policy sends its child orders; after `step(dt)` every order of ours still resting is cancelled (`cancel_all_mine`) before the next decision. Nothing of ours carries over between steps.
+**Why.** This is the paper's setting (§4): the QP decides fresh quantities at each step, and a fill probability is "the probability that an order posted now is filled before the next decision". Letting orders persist would make queue position a state variable and the fill probability a function of the order's age, which neither the paper nor our fill models handle.
+**Consequence.** Fill probabilities are per-step quantities. Queue position is lost at every step: an order re-posted at the same price joins the back of the queue, so the simulated passive fill rate is a lower bound on what a persistent order would get. Market orders are unaffected.
+
+## D18 — One fresh simulator per parent order, common random numbers across policies
+**Decision.** `run_many` creates a new `Simulator(params, seed=seed0 + i)` for order `i`, lets it run for `warmup` time units before the order arrives, and alternates the side (BUY for even `i`, SELL for odd `i`). The schedule is the same for all orders.
+**Why.** A fresh simulator makes orders independent samples, so means and standard errors over orders are meaningful. The same seeds across policies give common random numbers: two policies face the same order flow until their own orders perturb it, which cuts the variance of the *difference* between them. Alternating sides cancels any drift of the mid in the average arrival slippage, so a policy cannot look good because the price happened to move its way. The warm-up removes the artificial seeded state (closed spread, exact equilibrium depths, see D9 and D13).
+**Consequence.** Comparisons between policies are paired by order index. Results depend on `seed0` only through sampling noise, and reproducibility is exact for a given `(params, seed0, n_orders)`. Costs across orders are not comparable between sides without the sign convention `phi = side.value` in the metrics.
+
+## D19 — The simulated flow has no intraday profile, so VWAP coincides with TWAP
+**Decision.** All rates in `SimParams` are constant in time. The expected market volume is therefore linear in time, and `from_volume_profile` with the simulator's own volume reduces to `twap`.
+**Why.** Intraday seasonality (the U-shaped volume curve) is a separate modelling choice with its own parameters; it is not needed to study fill probabilities and schedule following.
+**Consequence.** Experiments use TWAP and Almgren–Chriss as schedules. `from_volume_profile` is implemented and tested so that a time-varying `mu(t)` can be added later without touching the execution code. The paper's TWAP/VWAP distinction cannot be reproduced here.

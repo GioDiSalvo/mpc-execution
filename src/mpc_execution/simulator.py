@@ -63,6 +63,7 @@ class Simulator:
         self._seed_book()   # initialization of the book
         self.my_orders: set[int] = set()          # ids of our resting orders
         self._executions: list[Execution] = []    # passive executions since the last step()
+        self.trades: list[tuple[float, int, int]] = [] # (t, price, qty)
 
     def _seed_book(self):
         for d in range(2, self.p.K + 1):
@@ -124,6 +125,10 @@ class Simulator:
             if f.is_mine:
                 self._executions.append(Execution(self.t, Side(-aggressor.value), f.price, f.qty, passive=True))
 
+    def _record_trades(self, fills: list[Fill]) -> None:
+        for f in fills:
+            self.trades.append((self.t, f.price, f.qty))
+
     def _apply_event(self, e):
         K = self.p.K
         if e >= 4 * K:
@@ -131,6 +136,7 @@ class Simulator:
             qty = self._draw_qty()
             _, fills = self.book.add_market(side, qty)
             self._record_passive_fills(fills, side)
+            self._record_trades(fills)
         else:
             block, d = divmod(e, K) # d ranges in 0,...,K-1
             block = Block(block)
@@ -139,6 +145,7 @@ class Simulator:
                 side = Side.BUY if block is Block.LIMIT_BUY else Side.SELL
                 _, fills = self.book.add_limit(side, self._level_price(side, d + 1), qty)
                 self._record_passive_fills(fills, side)
+                self._record_trades(fills)
             else:
                 side = Side.BUY if block is Block.CANCEL_BID else Side.SELL
                 book_side = self.book.bids if block is Block.CANCEL_BID else self.book.asks
@@ -180,6 +187,7 @@ class Simulator:
         order_id, fills = self.book.add_limit(side, price, qty, is_mine=True)
         if order_id is not None:
             self.my_orders.add(order_id)
+        self._record_trades(fills)
         executions = []
         for f in fills:
             executions.append(Execution(self.t, side, f.price, f.qty, passive=False))
@@ -188,6 +196,7 @@ class Simulator:
     def place_market(self, side: Side, qty: int) -> tuple[int, list[Execution]]:
         """Send our market order. Returns (unfilled residual, executions)."""
         unfilled_residual_qty, fills = self.book.add_market(side, qty)
+        self._record_trades(fills)
         executions = []
         for f in fills:
             executions.append(Execution(self.t, side, f.price, f.qty, passive=False))
