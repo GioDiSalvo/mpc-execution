@@ -88,3 +88,13 @@
 **Decision.** All rates in `SimParams` are constant in time. The expected market volume is therefore linear in time, and `from_volume_profile` with the simulator's own volume reduces to `twap`.
 **Why.** Intraday seasonality (the U-shaped volume curve) is a separate modelling choice with its own parameters; it is not needed to study fill probabilities and schedule following.
 **Consequence.** Experiments use TWAP and Almgren–Chriss as schedules. `from_volume_profile` is implemented and tested so that a time-varying `mu(t)` can be added later without touching the execution code. The paper's TWAP/VWAP distinction cannot be reproduced here.
+
+## D20 — Candidate limit prices are our own touch and the levels behind it; pi is an expected executed fraction
+**Decision.** At a decision time the policy may post limit orders at `n_levels` candidate prices: level j is j ticks behind our own best (BUY: best_bid − j; SELL: best_ask + j), j = 0..n_levels−1. A market order is the extra candidate with pi = 1. The fill probability of level j is defined as the expected fraction of an order of `qty` shares posted now at level j that executes before the next decision (one step, D17).
+**Why.** The paper's pi is the probability of a binary fill of a fixed-size order; in a simulator with partial fills the natural analogue, and the quantity the QP's expectation actually needs, is the executed fraction. Posting inside the spread is excluded for now (the spread is one tick 95% of the time).
+**Consequence.** pi depends on `qty` and `dt`; both are fixed per experiment. The paper's nested-fill covariance min(pi_i, pi_j) − pi_i pi_j assumes binary fills; with fractions it is an upper bound, measured in notebook 03.
+
+## D21 — Fill samples are collected by posting all candidate levels at once, in one long simulation
+**Decision.** `collect_fill_samples` runs a single simulator, and at each trial posts one order of `qty` at every candidate level simultaneously, steps `dt`, records the executed fraction per level and cancels the rest (D17). Trials alternate sides.
+**Why.** This is exactly what MPC does, so the nested structure between levels (level j can only execute after level j−1 is gone, by price priority) is measured as the policy will experience it. One long simulation gives trials that are weakly dependent but costs no warm-up per trial.
+**Consequence.** Our resting orders (n_levels × qty shares) perturb the book slightly; trials are not independent, so standard errors are approximate. Within a trial the executed fraction is non-increasing in j, exactly.
