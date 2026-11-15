@@ -1,7 +1,7 @@
 import pytest
 from mpc_execution.book import Side
 from mpc_execution.simulator import Simulator, SimParams
-from mpc_execution.policies import Crossing, OrderSpec
+from mpc_execution.policies import Crossing, OrderSpec, Traced
 
 @pytest.fixture
 def state():
@@ -19,3 +19,8 @@ def test_on_or_ahead_of_schedule_sends_nothing(state, q):
 def test_never_sends_more_than_remaining(state):
     specs = Crossing().decide(state, Side.SELL, q=100, target=250, remaining=120)
     assert specs == [OrderSpec("market", 120)]
+
+def test_traced_records_decisions_without_changing_them(state):
+    traced = Traced(Crossing())
+    assert traced.decide(state, Side.BUY, 0, 25, 500) == Crossing().decide(state, Side.BUY, 0, 25, 500)
+    assert len(traced.log) == 1

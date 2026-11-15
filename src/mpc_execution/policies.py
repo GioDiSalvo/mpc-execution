@@ -18,3 +18,11 @@ class Crossing:
     def decide(self, state, side, q, target, remaining):
         gap = min(target - q, remaining)
         return [OrderSpec("market", gap)] if gap > 0 else []
+
+class Traced:
+    def __init__(self, policy):
+        self.policy, self.log = policy, []
+    def decide(self, state, side, q, target, remaining):
+        orders = self.policy.decide(state, side, q, target, remaining)
+        self.log.append((q, target, state.spread, [(o.kind, o.qty, o.price) for o in orders]))
+        return orders
