@@ -3,6 +3,8 @@ import numpy as np
 import cvxpy as cp
 from mpc_execution.book import Side
 from mpc_execution.simulator import BookState
+from mpc_execution.fills import FillModel, candidate_prices
+from mpc_execution.policies import OrderSpec
 
 @dataclass(frozen=True)
 class MPCParams:
@@ -48,3 +50,45 @@ def solve_qp(pi: np.ndarray, c: np.ndarray, gap: float, remaining: float,
     if prob.status != cp.OPTIMAL:
         raise RuntimeError(f"QP not solved: status {prob.status} (not optimal)")
     return np.maximum(u.value, 0.0)
+
+def _round_to_shares(u: np.ndarray, remaining: int) -> np.ndarray:
+    """Round the continuous QP solution to whole shares without exceeding `remaining` (D23).
+    Any excess created by rounding is removed from the largest limit order first; u[0] is the market order."""
+    u = np.rint(u).astype(int)
+    excess = int(u.sum()) - remaining
+    while excess > 0:
+        j = 1 + int(np.argmax(u[1:])) if u[1:].any() else 0
+        cut = min(excess, int(u[j]))
+        u[j] -= cut
+        excess -= cut
+    return u
+
+class MPC:
+    """One-step-lookahead MPC of McAuliffe et al. (2026) with a pluggable fill model."""
+    def __init__(self, fill_model: FillModel, params: MPCParams = MPCParams()):
+        self.fill_model = fill_model
+        self.params = params
+        self.n_fallbacks = 0
+
+    def decide(self, state, side, q, target, remaining) -> list[OrderSpec]:
+        if remaining <= 0:
+            return []
+        p = self.params
+        gap = target - q
+        last_step = (gap == remaining)          # s_{t+1} = Q
+        n_levels = p.n_levels
+        Q = q + remaining
+        kappa = np.inf if p.kappa_frac is None else p.kappa_frac * Q 
+        limit_prices = candidate_prices(state, side, n_levels)
+        probs = np.asarray(self.fill_model.probs(state, side, max(gap, 1)))[: n_levels]
+        assert len(probs) == n_levels, "fill model has fewer levels than MPCParams.n_levels"
+        pi = np.concatenate(([1.0], probs))
+        costs = candidate_costs(state, side, limit_prices)
+        try:
+            u = _round_to_shares((solve_qp(pi, costs, gap, remaining, last_step, self.params, kappa)), remaining)
+        except RuntimeError:
+            self.n_fallbacks += 1                 # D23: fall back to crossing
+            return [OrderSpec("market", min(gap, remaining))] if gap > 0 else []
+        orders = [OrderSpec("market", u[0])] if u[0] > 0 else []
+        orders += [OrderSpec("limit", qty, p) for qty, p in zip(u[1:], limit_prices) if qty > 0]
+        return orders

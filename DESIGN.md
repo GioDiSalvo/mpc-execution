@@ -103,3 +103,8 @@
 **Decision.** The QP has 1 + n_levels candidates: a market order (index 0, pi = 1, cost +0.5 spread) and limit orders at the levels of D20. Costs are in spreads, phi (p − mid) / spread, as in the paper; quantities, tubes and the variance budget are in shares. At the last step the lower tube is closed (rho_low = 0), so the whole gap is sent as a market order. Any single child order is capped at kappa_frac · Q (paper’s kappa); with the default tubes the cap is inactive, since the total sent is already bounded by gap + rho_up.
 **Why.** Spread units keep gamma, xi and the costs comparable when the spread changes. The paper leaves the end of the order to the tube; closing it makes completion exact, so policies are compared at equal completion and cost differences are not an artefact of unexecuted shares.
 **Consequence.** The total sent never exceeds the residual Q − q, even if every order fills. Completion is 1 whenever the book can absorb the last market order.
+
+## D23 — Continuous solution rounded to shares; crossing as fallback
+**Decision.** The QP is solved in continuous quantities and rounded to the nearest integer; any excess over the residual is removed from the largest limit order. If the solver does not return an optimal status the step falls back to crossing, and the policy counts the fallbacks.
+**Why.** Integer programming is unnecessary at slices of tens of shares. A silent fallback would hide solver problems; a counted one makes them visible in the experiment.
+**Consequence.** Constraints hold up to one share per candidate. `n_fallbacks` must be reported with every result and should be zero.
