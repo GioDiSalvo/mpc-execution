@@ -2,7 +2,7 @@ from mpc_execution.book import Side
 from mpc_execution.simulator import Simulator, SimParams
 from mpc_execution.mpc import MPCParams, MPC, nested_cov, candidate_costs, solve_qp, _round_to_shares
 from mpc_execution.fills import ConstantFill, candidate_prices
-from mpc_execution.policies import OrderSpec
+from mpc_execution.policies import OrderSpec, ThresholdRule
 from mpc_execution.experiment import run_order
 from mpc_execution.schedule import twap
 import numpy as np
@@ -99,3 +99,21 @@ def test_mpc_completes_an_order_with_passive_fills():
     assert r.filled == 500 and sim.my_orders == set()
     assert policy.n_fallbacks == 0
     assert any(e.passive for e in r.executions)
+
+class Compare:
+    """Runs policy `a` and records, at every step, whether policy `b` would have sent the same orders."""
+    def __init__(self, a, b):
+        self.a, self.b, self.same = a, b, []
+    def decide(self, state, side, q, target, remaining):
+        orders = self.a.decide(state, side, q, target, remaining)
+        self.same.append(orders == self.b.decide(state, side, q, target, remaining))
+        return orders
+
+@pytest.mark.parametrize("seed, side", [(0, Side.BUY), (1, Side.SELL), (2, Side.BUY)])
+def test_mpc_with_constant_fills_is_the_threshold_rule(seed, side):
+    sim = Simulator(SimParams(), seed=seed)
+    sim.step(50.0)
+    p = MPCParams()
+    both = Compare(MPC(FILL, p), ThresholdRule(tau=int(p.rho_low), ahead=int(p.rho_up)))
+    run_order(sim, both, side, 500, twap(500, 20), 5.0)
+    assert all(both.same)
