@@ -32,48 +32,48 @@ class OrderResult:
         return float(self.mids[0])
 
 def fwap(r: OrderResult) -> float:
-    'quantity-weighted mean of our execution prices'
+    """quantity-weighted mean of our execution prices"""
     if not r.executions:
         return float("nan")    
     return sum(e.price * e.qty for e in r.executions) / r.filled
 
 def market_vwap(r: OrderResult) -> float:
-    'quantity-weighted mean of all market trades'
+    """quantity-weighted mean of all market trades"""
     if not r.market_trades:
         return float("nan")
     return sum(p * q for _, p, q in r.market_trades) / sum(q for _, _, q in r.market_trades)
 
 def swap(r: OrderResult) -> float:
-    'sum_k (s_{k+1} - s_k) * mid_k / Q   (§3.4: executing the slice at the mid of each decision time)'
+    """sum_k (s_{k+1} - s_k) * mid_k / Q   (§3.4: executing the slice at the mid of each decision time)"""
     return float(np.diff(r.schedule) @ r.mids[:-1]) / r.Q
 
 def arrival_slippage_bps(r: OrderResult) -> float:
-    '1e4 * phi * (fwap - arrival_mid) / arrival_mid,  phi = side.value'
+    """1e4 * phi * (fwap - arrival_mid) / arrival_mid,  phi = side.value"""
     f = fwap(r)
     mid = r.arrival_mid
     phi = r.side.value
     return 1e4 * phi * (f - mid) / mid
 
 def vwap_slippage_bps(r: OrderResult) -> float:
-    '1e4 * phi * (fwap - vwap) / vwap,  phi = side.value'
+    """1e4 * phi * (fwap - vwap) / vwap,  phi = side.value"""
     f = fwap(r)
     mv = market_vwap(r)
     phi = r.side.value
     return 1e4 * phi * (f - mv) / mv
 
 def schedule_shortfall_bps(r: OrderResult) -> float:
-    '1e4 * phi * (fwap - swap) / swap,  phi = side.value'
+    """1e4 * phi * (fwap - swap) / swap,  phi = side.value"""
     f = fwap(r)
     s = swap(r)
     phi = r.side.value
     return 1e4 * phi * (f - s) / s
 
 def completion(r: OrderResult) -> float:
-    'filled / Q'
+    """filled / Q"""
     return r.filled / r.Q
 
 def deviation(r: OrderResult) -> np.ndarray:
-    '# q_k - s_k'
+    """q_k - s_k"""
     return r.filled_path - r.schedule
 
 def summarize(r: OrderResult) -> dict:
