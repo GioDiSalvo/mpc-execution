@@ -108,3 +108,8 @@
 **Decision.** The QP is solved in continuous quantities and rounded to the nearest integer; any excess over the residual is removed from the largest limit order. If the solver does not return an optimal status the step falls back to crossing, and the policy counts the fallbacks.
 **Why.** Integer programming is unnecessary at slices of tens of shares. A silent fallback would hide solver problems; a counted one makes them visible in the experiment.
 **Consequence.** Constraints hold up to one share per candidate. `n_fallbacks` must be reported with every result and should be zero.
+
+## D24 — Rule-based baseline: two thresholds, after Cartea and Jaimungal
+**Decision.** `ThresholdRule(tau, ahead)` sends to market whatever exceeds a tolerated delay (gap − `tau`) and posts the rest of gap + `ahead` at our touch; at the last step the whole gap goes to market, as in D22. It uses no fill model and solves no optimisation.
+**Why.** Cartea and Jaimungal (2015) execute passively when ahead of schedule and cross the spread to catch up when behind. This is the simplest rule of that kind with the same information and order types as MPC; it is in the spirit of their result, not the optimal strategy they derive. Its parameters mirror MPC's tubes (`tau` ↔ `rho_low`, `ahead` ↔ `rho_up`), so the two are compared at equal tolerance.
+**Consequence.** With constant fill probabilities and the default settings, MPC makes exactly the decisions of `ThresholdRule(tau=rho_low, ahead=rho_up)` (tested step by step). The QP can depart from the rule only through a state-dependent fill model, a large `gamma`, or an active variance budget `beta`.
