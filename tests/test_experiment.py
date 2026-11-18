@@ -15,6 +15,20 @@ class FarLimit:
         price = state.best_bid - 50 if side == Side.BUY else state.best_ask + 50
         return [OrderSpec("limit", target - q, price)]
 
+class MidSpy:
+    """Crossing that records the mid it is shown at every decision."""
+    def __init__(self):
+        self.seen = []
+    def decide(self, state, side, q, target, remaining):
+        self.seen.append(state.mid)
+        return Crossing().decide(state, side, q, target, remaining)
+
+def test_mids_are_the_mids_at_decision_times(sim):
+    spy = MidSpy()
+    r = run_order(sim, spy, Side.BUY, Q, twap(Q, N), DT)
+    assert list(r.mids[:-1]) == spy.seen
+    assert r.mids[-1] == sim.snapshot().mid
+
 @pytest.fixture
 def sim():
     s = Simulator(SimParams(), seed=0)

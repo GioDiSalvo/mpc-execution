@@ -8,10 +8,11 @@ def run_order(sim: Simulator, policy: Policy, side: Side, Q: int, schedule: np.n
     """Execute one parent order of Q shares over len(schedule)-1 steps of length dt. Our orders live one step (D17)."""
     n = len(schedule) - 1
     q = 0
-    executions, filled_path, mids = [], [0], [sim.snapshot().mid]
+    executions, filled_path, mids = [], [0], []
     trades_before = len(sim.trades)
     for k in range(n):
         state = sim.snapshot()
+        mids.append(state.mid)            # mid at decision time t_k
         for o in policy.decide(state, side, q, int(schedule[k + 1]), Q - q):
             if o.kind == "market":
                 _, ex = sim.place_market(side, o.qty)
@@ -23,7 +24,7 @@ def run_order(sim: Simulator, policy: Policy, side: Side, Q: int, schedule: np.n
         sim.cancel_all_mine()                      # D17: unfilled limit orders die at the end of the step
         q = sum(e.qty for e in executions)
         filled_path.append(q)
-        mids.append(state.mid)            # t_n
+    mids.append(sim.snapshot().mid)                # t_n, after the last step
     return OrderResult(side, Q, schedule, filled_path=np.array(filled_path), mids=np.array(mids),
                        executions=executions, market_trades=sim.trades[trades_before:])
 

@@ -82,7 +82,7 @@
 ## D18 — One fresh simulator per parent order, common random numbers across policies
 **Decision.** `run_many` creates a new `Simulator(params, seed=seed0 + i)` for order `i`, lets it run for `warmup` time units before the order arrives, and alternates the side (BUY for even `i`, SELL for odd `i`). The schedule is the same for all orders.
 **Why.** A fresh simulator makes orders independent samples, so means and standard errors over orders are meaningful. The same seeds across policies give common random numbers: two policies face the same order flow until their own orders perturb it, which cuts the variance of the *difference* between them. Alternating sides cancels any drift of the mid in the average arrival slippage, so a policy cannot look good because the price happened to move its way. The warm-up removes the artificial seeded state (closed spread, exact equilibrium depths, see D9 and D13).
-**Consequence.** Comparisons between policies are paired by order index. Results depend on `seed0` only through sampling noise, and reproducibility is exact for a given `(params, seed0, n_orders)`. Costs across orders are not comparable between sides without the sign convention `phi = side.value` in the metrics.
+**Consequence (amended after notebook 04).** Pairing by seed gives two policies the same book at arrival, not the same order flow afterwards: random numbers are drawn event by event, so the streams diverge as soon as the policies act differently. The measured correlation of per-order arrival slippage between crossing and MPC is about 0.3, and the paired standard error is only 15–20% smaller than the unpaired one.
 
 ## D19 — The simulated flow has no intraday profile, so VWAP coincides with TWAP
 **Decision.** All rates in `SimParams` are constant in time. The expected market volume is therefore linear in time, and `from_volume_profile` with the simulator's own volume reduces to `twap`.
@@ -98,3 +98,18 @@
 **Decision.** `collect_fill_samples` runs a single simulator, and at each trial posts one order of `qty` at every candidate level simultaneously, steps `dt`, records the executed fraction per level and cancels the rest (D17). Trials alternate sides.
 **Why.** This is exactly what MPC does, so the nested structure between levels (level j can only execute after level j−1 is gone, by price priority) is measured as the policy will experience it. One long simulation gives trials that are weakly dependent but costs no warm-up per trial.
 **Consequence.** Our resting orders (n_levels × qty shares) perturb the book slightly; trials are not independent, so standard errors are approximate. Within a trial the executed fraction is non-increasing in j, exactly.
+
+## D22 — MPC candidates, units and terminal rule
+**Decision.** The QP has 1 + n_levels candidates: a market order (index 0, pi = 1, cost +0.5 spread) and limit orders at the levels of D20. Costs are in spreads, phi (p − mid) / spread, as in the paper; quantities, tubes and the variance budget are in shares. At the last step the lower tube is closed (rho_low = 0), so the whole gap is sent as a market order. Any single child order is capped at kappa_frac · Q (paper’s kappa); with the default tubes the cap is inactive, since the total sent is already bounded by gap + rho_up.
+**Why.** Spread units keep gamma, xi and the costs comparable when the spread changes. The paper leaves the end of the order to the tube; closing it makes completion exact, so policies are compared at equal completion and cost differences are not an artefact of unexecuted shares.
+**Consequence.** The total sent never exceeds the residual Q − q, even if every order fills. Completion is 1 whenever the book can absorb the last market order.
+
+## D23 — Continuous solution rounded to shares; crossing as fallback
+**Decision.** The QP is solved in continuous quantities and rounded to the nearest integer; any excess over the residual is removed from the largest limit order. If the solver does not return an optimal status the step falls back to crossing, and the policy counts the fallbacks.
+**Why.** Integer programming is unnecessary at slices of tens of shares. A silent fallback would hide solver problems; a counted one makes them visible in the experiment.
+**Consequence.** Constraints hold up to one share per candidate. `n_fallbacks` must be reported with every result and should be zero.
+
+## D24 — Rule-based baseline: two thresholds, after Cartea and Jaimungal
+**Decision.** `ThresholdRule(tau, ahead)` sends to market whatever exceeds a tolerated delay (gap − `tau`) and posts the rest of gap + `ahead` at our touch; at the last step the whole gap goes to market, as in D22. It uses no fill model and solves no optimisation.
+**Why.** Cartea and Jaimungal (2015) execute passively when ahead of schedule and cross the spread to catch up when behind. This is the simplest rule of that kind with the same information and order types as MPC; it is in the spirit of their result, not the optimal strategy they derive. Its parameters mirror MPC's tubes (`tau` ↔ `rho_low`, `ahead` ↔ `rho_up`), so the two are compared at equal tolerance.
+**Consequence.** With constant fill probabilities and the default settings, MPC makes exactly the decisions of `ThresholdRule(tau=rho_low, ahead=rho_up)` (tested step by step). The QP can depart from the rule only through a state-dependent fill model, a large `gamma`, or an active variance budget `beta`.
