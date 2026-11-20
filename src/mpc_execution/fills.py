@@ -34,7 +34,8 @@ def collect_fill_samples(params: SimParams, n_levels: int, qty: int, dt: float,
     """One row per (trial, level). Columns:
     trial, side (name), level, price, filled_frac,
     spread, imbalance, depth_at_level (shares ahead at that price before posting, ours excluded),
-    shares_ahead (from snapshot().my_orders right after posting; number of shares at better price or earlier at same price)."""
+    shares_ahead (cumulative depth of our own side from the touch down to that level, before posting:
+    the shares with price or time priority over our order; from `shares_ahead_by_level`)."""
     sim = Simulator(params, seed)
     sim.step(warmup)
     rows = []
@@ -52,14 +53,53 @@ def collect_fill_samples(params: SimParams, n_levels: int, qty: int, dt: float,
 
         ex = sim.step(dt)
 
+        shares_ahead = shares_ahead_by_level(state, side, n_levels)
         for j, price in enumerate(prices):
             executed = sum(e.qty for e in ex if e.price == price)
             rows.append({"trial": i, "side": side.name, "level": j, "price": price,
                          "filled_frac": executed / qty,
                          "spread": spread, "imbalance": imbalance,
                          "depth_at_level": int(depth_at_level[j]),
-                         "shares_ahead": int(sum(depth_at_level[:j+1]))}
+                         "shares_ahead": shares_ahead[j]}
             )
         sim.cancel_all_mine()
         assert sim.my_orders == set()
     return pd.DataFrame(rows)
+
+def shares_ahead_by_level(state: BookState, side: Side, n_levels: int) -> np.ndarray:
+    """Shares with price or time priority over an order posted now at each candidate level:
+    cumulative depth of our own side from the touch down to that level. Shape (n_levels,)."""
+    depth_at_level = state.bid_depth if side is Side.BUY else state.ask_depth
+    return np.array([int(sum(depth_at_level[:j+1])) for j in range(n_levels)])
+
+def design_matrix(shares_ahead, level, spread) -> np.ndarray:
+    """One row per candidate order. Columns: 1, log(1 + shares_ahead), level, 1[spread > 1]."""
+    assert len(shares_ahead) == len(level) == len(spread)
+    shares_ahead, level, spread = np.asarray(shares_ahead, dtype=float), np.asarray(level, dtype=float), np.asarray(spread, dtype=float)
+    n = len(shares_ahead)
+    ones = np.ones(n)
+    return np.array([ones, np.log(1 + shares_ahead), level, (spread > 1).astype(int)]).T
+
+def sigmoid(z):
+    """1 / (1 + exp(-z)), with z clipped to [-35, 35]."""
+    z = np.clip(z, -35, 35)
+    return 1 / (1 + np.exp(-z))
+
+def fit_logistic(X: np.ndarray, y: np.ndarray, l2: float = 1e-6, max_iter: int = 100, tol: float = 1e-10) -> np.ndarray:
+    """Coefficients of the (fractional) logit, by Newton's method.
+    Minimises -sum(y log p + (1 - y) log(1 - p)) + (l2 / 2) |beta|^2 with p = sigmoid(X beta).
+    Raises RuntimeError if it has not converged after max_iter steps."""
+    X, y = np.asarray(X, dtype=float), np.asarray(y, dtype=float)
+    beta = np.zeros(X.shape[1])
+    for _ in range(max_iter):
+        p = sigmoid(X @ beta)
+        g = X.T @ (p - y) + l2 * beta                      # gradient
+        w = (p * (1 - p)) [:, None]
+        H = X.T @ (X * w) + l2 * np.eye(X.shape[1])        # Hessian
+        step = np.linalg.solve(H, g)
+        if np.max(np.abs(step)) < tol:
+            break
+        beta -= step
+    else:
+        raise RuntimeError(f"fit_logistic did not converge in {max_iter} iterations")
+    return beta

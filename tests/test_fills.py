@@ -2,7 +2,8 @@ import numpy as np
 import pytest
 from mpc_execution.book import Side
 from mpc_execution.simulator import Simulator, SimParams
-from mpc_execution.fills import ConstantFill, candidate_prices, collect_fill_samples
+from mpc_execution.fills import ConstantFill, candidate_prices, collect_fill_samples, design_matrix, shares_ahead_by_level, sigmoid, fit_logistic
+from math import log
 
 N_LEVELS, QTY, DT, N_TRIALS, N_TRIALS_STATS = 3, 25, 5.0, 20, 300
 
@@ -54,3 +55,51 @@ def test_constant_fill_is_non_increasing():
      assert model.pi.shape == (N_LEVELS,)
      assert np.allclose(model.pi, expected)
      assert np.all(np.diff(model.pi) <= 0)
+
+def test_design_matrix_works_correctly():
+     assert np.allclose(design_matrix([0, 99], [0, 1], [1, 2]), [[1, 0, 0, 0], [1, log(100), 1, 1]])
+
+@pytest.mark.parametrize("side", [Side.BUY, Side.SELL])
+def test_shares_ahead_by_level_works_correctly(side):
+     sim = Simulator(SimParams(), seed=0)
+     sim.step(50)
+     state = sim.snapshot()
+     shares_ahead = shares_ahead_by_level(state, side, 3)
+     assert len(shares_ahead) == 3
+     assert (shares_ahead[:-1] <= shares_ahead[1:]).all()
+     assert shares_ahead[0] == (state.bid_depth[0] if side is Side.BUY else state.ask_depth[0])
+
+def test_no_skews():
+     df = collect_fill_samples(SimParams(), N_LEVELS, QTY, DT, n_trials=N_TRIALS, seed=0)
+     shares_ahead = df.loc[:, "shares_ahead"]
+     expected = df.groupby("trial").depth_at_level.cumsum()
+     assert np.array_equal(shares_ahead, expected)
+
+BETA = np.array([-0.5, 1.5])
+
+def make_data(n, seed=0):
+    rng = np.random.default_rng(seed)
+    X = np.column_stack([np.ones(n), rng.normal(size=n)])
+    return X, sigmoid(X @ BETA), rng          # design matrix, true probabilities, generator
+
+def test_intercept_only():
+    y = np.array([1, 1, 1, 0, 0, 0, 0, 0, 0, 0], dtype=float)      # mean 0.3
+    beta = fit_logistic(np.ones((len(y), 1)), y)
+    assert beta == pytest.approx(np.log(0.3 / 0.7), abs=1e-5)
+
+def test_exact_recovery():
+     X, y, _ = make_data(2_000)
+     beta = fit_logistic(X, y)
+     assert beta == pytest.approx(BETA)
+
+def test_noisy_recovery():
+     X, p, rng = make_data(50_000)
+     y = (rng.uniform(size=len(p)) < p).astype(float)
+     beta = fit_logistic(X, y)
+     assert np.allclose(beta, BETA, atol=0.05)
+
+def test_no_convergence():
+     X, p, rng = make_data(50_000)
+     y = (rng.uniform(size=len(p)) < p).astype(float)
+     with pytest.raises(RuntimeError):
+          fit_logistic(X, y, max_iter=1)
