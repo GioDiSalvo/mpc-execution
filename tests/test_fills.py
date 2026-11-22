@@ -2,10 +2,22 @@ import numpy as np
 import pytest
 from mpc_execution.book import Side
 from mpc_execution.simulator import Simulator, SimParams
-from mpc_execution.fills import ConstantFill, candidate_prices, collect_fill_samples, design_matrix, shares_ahead_by_level, sigmoid, fit_logistic
+from mpc_execution.fills import ConstantFill, LogisticFill, candidate_prices, collect_fill_samples, design_matrix, shares_ahead_by_level, sigmoid, fit_logistic
+from mpc_execution.calibration import brier
 from math import log
 
 N_LEVELS, QTY, DT, N_TRIALS, N_TRIALS_STATS = 3, 25, 5.0, 20, 300
+
+@pytest.fixture
+def state():
+    sim = Simulator(SimParams(), seed=0)
+    sim.step(50.0)
+    return sim.snapshot()
+
+@pytest.fixture(scope="module")
+def fitted():
+    samples = collect_fill_samples(SimParams(), N_LEVELS, QTY, DT, n_trials=500, seed=0)
+    return LogisticFill.from_samples(samples)
 
 def test_candidate_prices_works_correctly():
     sim = Simulator(SimParams(), seed=0)
@@ -103,3 +115,34 @@ def test_no_convergence():
     y = (rng.uniform(size=len(p)) < p).astype(float)
     with pytest.raises(RuntimeError):
         fit_logistic(X, y, max_iter=1)
+
+@pytest.mark.parametrize("side", [Side.BUY, Side.SELL])
+def test_closed_form_logistic_fill(side, state):
+    shares_ahead = shares_ahead_by_level(state, side, N_LEVELS)
+    pi = LogisticFill([0, -1, 0, 0], N_LEVELS).probs(state, side, QTY)
+    assert pi == pytest.approx(1 / (2 + shares_ahead))      # sigmoid(-log(1 + a)) = 1 / (2 + a)
+
+@pytest.mark.parametrize("side", [Side.BUY, Side.SELL])
+def test_fitted_logistic_fill_gives_valid_decreasing_probabilities(fitted, state, side):
+    pi = fitted.probs(state, side, QTY)
+    assert pi.shape == (N_LEVELS,)
+    assert np.all((0 < pi) & (pi < 1))
+    assert np.all(np.diff(pi) <= 0)
+
+def test_longer_queue_means_lower_fill_probability(fitted):
+    X = design_matrix([30, 800], [0, 0], [1, 1])
+    pi = sigmoid(X @ fitted.beta)
+    assert pi[0] > pi[1] + 0.3
+
+def test_logistic_beats_constant_out_of_sample():
+    train = collect_fill_samples(SimParams(), N_LEVELS, QTY, DT, n_trials=1000, seed=0)
+    logistic, constant = LogisticFill.from_samples(train), ConstantFill.from_samples(train)
+
+    test = collect_fill_samples(SimParams(), N_LEVELS, QTY, DT, n_trials=1000, seed=1)
+    test = test[test.level == 0]
+    outcome = test.filled_frac
+    X = design_matrix(test["shares_ahead"], test["level"], test["spread"])
+    pi_logistic = sigmoid(X @ logistic.beta)
+    pi_constant = np.full(len(test), constant.pi[0])
+
+    assert brier(outcome, pi_constant) > brier(outcome, pi_logistic) + 0.02

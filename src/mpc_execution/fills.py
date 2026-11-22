@@ -103,3 +103,26 @@ def fit_logistic(X: np.ndarray, y: np.ndarray, l2: float = 1e-6, max_iter: int =
     else:
         raise RuntimeError(f"fit_logistic did not converge in {max_iter} iterations")
     return beta
+
+class LogisticFill:
+    """State-dependent fill model: pi_j = sigmoid(beta . x_j), x_j the features of candidate level j in the current book."""
+    def __init__(self, beta, n_levels: int):
+        self.beta = np.asarray(beta, dtype=float)
+        self.n_levels = n_levels
+
+    def probs(self, state: BookState, side: Side, qty: int) -> np.ndarray:     # shape (n_levels,)
+        shares_ahead = shares_ahead_by_level(state, side, self.n_levels)
+        levels =  np.arange(self.n_levels)
+        spread = np.full(self.n_levels, state.spread)
+        X = design_matrix(shares_ahead, levels, spread)
+        pi = sigmoid(X @ self.beta)
+        return pi
+
+    @classmethod
+    def from_samples(cls, samples: pd.DataFrame, l2: float = 1e-6) -> "LogisticFill":
+        X = design_matrix(samples.shares_ahead, samples.level, samples.spread) # the ingredients
+        y = samples.filled_frac.to_numpy()                                     # what happened
+        beta = fit_logistic(X, y, l2)                                          # learn the coefficients
+        n_levels = samples.level.max() + 1
+        return cls(beta, n_levels)
+        
