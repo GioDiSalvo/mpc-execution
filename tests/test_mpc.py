@@ -1,7 +1,7 @@
 from mpc_execution.book import Side
 from mpc_execution.simulator import Simulator, SimParams
 from mpc_execution.mpc import MPCParams, MPC, nested_cov, candidate_costs, solve_qp, _round_to_shares
-from mpc_execution.fills import ConstantFill, candidate_prices
+from mpc_execution.fills import ConstantFill, LogisticFill, candidate_prices, collect_fill_samples
 from mpc_execution.policies import OrderSpec, ThresholdRule
 from mpc_execution.experiment import run_order
 from mpc_execution.schedule import twap
@@ -27,6 +27,11 @@ def state():
     sim = Simulator(SimParams(), seed=0)
     sim.step(50.0)
     return sim.snapshot()
+
+@pytest.fixture(scope="module")
+def logistic():
+    samples = collect_fill_samples(SimParams(), n_levels=3, qty=25, dt=5.0, n_trials=500)
+    return LogisticFill.from_samples(samples)
 
 @pytest.mark.parametrize("side", [Side.BUY, Side.SELL])
 def test_candidate_costs(state, side):
@@ -117,3 +122,21 @@ def test_mpc_with_constant_fills_is_the_threshold_rule(seed, side):
     both = Compare(MPC(FILL, p), ThresholdRule(tau=int(p.rho_low), ahead=int(p.rho_up)))
     run_order(sim, both, side, 500, twap(500, 20), 5.0)
     assert all(both.same)
+
+def test_mpc_completes_an_order_with_logistic_fills(logistic):
+    sim = Simulator(SimParams(), seed=0)
+    sim.step(50.0)
+    policy = MPC(logistic)
+    r = run_order(sim, policy, side=Side.BUY, Q=500, schedule=twap(500, 20), dt=5.0)
+    assert r.filled == 500 and sim.my_orders == set()
+    assert policy.n_fallbacks == 0
+    assert any(e.passive for e in r.executions)
+
+@pytest.mark.parametrize("seed, side", [(0, Side.BUY), (1, Side.SELL), (2, Side.BUY)])
+def test_mpc_with_logistic_fills_departs_from_the_threshold_rule(logistic, seed, side):
+    sim = Simulator(SimParams(), seed=seed)
+    sim.step(50.0)
+    p = MPCParams()
+    both = Compare(MPC(logistic, p), ThresholdRule(tau=int(p.rho_low), ahead=int(p.rho_up)))
+    run_order(sim, both, side, 500, twap(500, 20), 5.0)
+    assert not all(both.same)

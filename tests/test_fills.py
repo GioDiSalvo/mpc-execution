@@ -2,9 +2,22 @@ import numpy as np
 import pytest
 from mpc_execution.book import Side
 from mpc_execution.simulator import Simulator, SimParams
-from mpc_execution.fills import ConstantFill, candidate_prices, collect_fill_samples
+from mpc_execution.fills import ConstantFill, LogisticFill, candidate_prices, collect_fill_samples, design_matrix, shares_ahead_by_level, sigmoid, fit_logistic
+from mpc_execution.calibration import brier
+from math import log
 
 N_LEVELS, QTY, DT, N_TRIALS, N_TRIALS_STATS = 3, 25, 5.0, 20, 300
+
+@pytest.fixture
+def state():
+    sim = Simulator(SimParams(), seed=0)
+    sim.step(50.0)
+    return sim.snapshot()
+
+@pytest.fixture(scope="module")
+def fitted():
+    samples = collect_fill_samples(SimParams(), N_LEVELS, QTY, DT, n_trials=500, seed=0)
+    return LogisticFill.from_samples(samples)
 
 def test_candidate_prices_works_correctly():
     sim = Simulator(SimParams(), seed=0)
@@ -42,15 +55,94 @@ def test_collect_fill_samples_has_right_entries():
     assert df.equals(df1)
 
 def test_fill_probability_is_highest_at_the_touch():
-     df = collect_fill_samples(SimParams(), N_LEVELS, QTY, DT, N_TRIALS_STATS, seed=0)
-     pi = df.groupby("level").filled_frac.mean()
-     assert pi.iloc[0] > pi.iloc[-1] + .1
-     assert 0 < pi.iloc[0] < 1
+    df = collect_fill_samples(SimParams(), N_LEVELS, QTY, DT, N_TRIALS_STATS, seed=0)
+    pi = df.groupby("level").filled_frac.mean()
+    assert pi.iloc[0] > pi.iloc[-1] + .1
+    assert 0 < pi.iloc[0] < 1
 
 def test_constant_fill_is_non_increasing():
-     samples = collect_fill_samples(SimParams(), N_LEVELS, QTY, DT, N_TRIALS, seed=0)
-     model = ConstantFill.from_samples(samples)
-     expected = samples.groupby("level").filled_frac.mean().to_numpy()
-     assert model.pi.shape == (N_LEVELS,)
-     assert np.allclose(model.pi, expected)
-     assert np.all(np.diff(model.pi) <= 0)
+    samples = collect_fill_samples(SimParams(), N_LEVELS, QTY, DT, N_TRIALS, seed=0)
+    model = ConstantFill.from_samples(samples)
+    expected = samples.groupby("level").filled_frac.mean().to_numpy()
+    assert model.pi.shape == (N_LEVELS,)
+    assert np.allclose(model.pi, expected)
+    assert np.all(np.diff(model.pi) <= 0)
+
+def test_design_matrix_works_correctly():
+    assert np.allclose(design_matrix([0, 99], [0, 1], [1, 2]), [[1, 0, 0, 0], [1, log(100), 1, 1]])
+
+@pytest.mark.parametrize("side", [Side.BUY, Side.SELL])
+def test_shares_ahead_by_level_works_correctly(side):
+    sim = Simulator(SimParams(), seed=0)
+    sim.step(50)
+    state = sim.snapshot()
+    shares_ahead = shares_ahead_by_level(state, side, 3)
+    assert len(shares_ahead) == 3
+    assert (shares_ahead[:-1] <= shares_ahead[1:]).all()
+    assert shares_ahead[0] == (state.bid_depth[0] if side is Side.BUY else state.ask_depth[0])
+
+def test_no_skews():
+    df = collect_fill_samples(SimParams(), N_LEVELS, QTY, DT, n_trials=N_TRIALS, seed=0)
+    shares_ahead = df.loc[:, "shares_ahead"]
+    expected = df.groupby("trial").depth_at_level.cumsum()
+    assert np.array_equal(shares_ahead, expected)
+
+BETA = np.array([-0.5, 1.5])
+
+def make_data(n, seed=0):
+    rng = np.random.default_rng(seed)
+    X = np.column_stack([np.ones(n), rng.normal(size=n)])
+    return X, sigmoid(X @ BETA), rng          # design matrix, true probabilities, generator
+
+def test_intercept_only():
+    y = np.array([1, 1, 1, 0, 0, 0, 0, 0, 0, 0], dtype=float)      # mean 0.3
+    beta = fit_logistic(np.ones((len(y), 1)), y)
+    assert beta == pytest.approx(np.log(0.3 / 0.7), abs=1e-5)
+
+def test_exact_recovery():
+    X, y, _ = make_data(2_000)
+    beta = fit_logistic(X, y)
+    assert beta == pytest.approx(BETA)
+
+def test_noisy_recovery():
+    X, p, rng = make_data(50_000)
+    y = (rng.uniform(size=len(p)) < p).astype(float)
+    beta = fit_logistic(X, y)
+    assert np.allclose(beta, BETA, atol=0.05)
+
+def test_no_convergence():
+    X, p, rng = make_data(50_000)
+    y = (rng.uniform(size=len(p)) < p).astype(float)
+    with pytest.raises(RuntimeError):
+        fit_logistic(X, y, max_iter=1)
+
+@pytest.mark.parametrize("side", [Side.BUY, Side.SELL])
+def test_closed_form_logistic_fill(side, state):
+    shares_ahead = shares_ahead_by_level(state, side, N_LEVELS)
+    pi = LogisticFill([0, -1, 0, 0], N_LEVELS).probs(state, side, QTY)
+    assert pi == pytest.approx(1 / (2 + shares_ahead))      # sigmoid(-log(1 + a)) = 1 / (2 + a)
+
+@pytest.mark.parametrize("side", [Side.BUY, Side.SELL])
+def test_fitted_logistic_fill_gives_valid_decreasing_probabilities(fitted, state, side):
+    pi = fitted.probs(state, side, QTY)
+    assert pi.shape == (N_LEVELS,)
+    assert np.all((0 < pi) & (pi < 1))
+    assert np.all(np.diff(pi) <= 0)
+
+def test_longer_queue_means_lower_fill_probability(fitted):
+    X = design_matrix([30, 800], [0, 0], [1, 1])
+    pi = sigmoid(X @ fitted.beta)
+    assert pi[0] > pi[1] + 0.3
+
+def test_logistic_beats_constant_out_of_sample():
+    train = collect_fill_samples(SimParams(), N_LEVELS, QTY, DT, n_trials=1000, seed=0)
+    logistic, constant = LogisticFill.from_samples(train), ConstantFill.from_samples(train)
+
+    test = collect_fill_samples(SimParams(), N_LEVELS, QTY, DT, n_trials=1000, seed=1)
+    test = test[test.level == 0]
+    outcome = test.filled_frac
+    X = design_matrix(test["shares_ahead"], test["level"], test["spread"])
+    pi_logistic = sigmoid(X @ logistic.beta)
+    pi_constant = np.full(len(test), constant.pi[0])
+
+    assert brier(outcome, pi_constant) > brier(outcome, pi_logistic) + 0.02
