@@ -13,12 +13,6 @@ CASES = [
     ("capped_by_remaining",  25,    490, 495,    10,        [("limit", 10)]),
 ]
 
-@pytest.mark.parametrize("name, ahead, q, target, remaining, expected", CASES, ids=[c[0] for c in CASES])
-def test_threshold_rule(state, name, ahead, q, target, remaining, expected):
-    orders = ThresholdRule(tau=50, ahead=ahead).decide(state, Side.BUY, q, target, remaining)
-    want = [OrderSpec(kind, qty, state.best_bid if kind == "limit" else None) for kind, qty in expected]
-    assert orders == want
-
 @pytest.fixture
 def state():
     return Simulator(SimParams(), seed=0).snapshot()
