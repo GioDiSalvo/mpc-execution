@@ -31,7 +31,7 @@ def run_order(sim: Simulator, policy: Policy, side: Side, Q: int, schedule: np.n
 def run_many(params: SimParams, policy_factory, dt: float,
              schedule: np.ndarray, n_orders: int, seed0: int = 0, warmup: float = 50.0) -> list[OrderResult]:
     """One fresh simulator per order (seed = seed0 + i), warmed up for `warmup` time units,
-    sides alternating BUY/SELL. Returns one row per order with summarize(result)."""
+    sides alternating BUY/SELL (D18). Returns one OrderResult per order."""
     results = []
     Q = int(schedule[-1])
     for i in range(n_orders):

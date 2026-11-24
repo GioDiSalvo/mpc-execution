@@ -37,17 +37,17 @@
 ## D9 — Limit-order distances are measured from the opposite best quote
 **Decision.** A new buy limit order at distance `d` is placed at `best_ask - d`; a new sell at `best_bid + d`, for `d = 1..K`. Cancellation rates use the same indexing. (Cont–Stoikov–Talreja convention.)
 **Why.** With `d < spread` the order lands inside the spread and improves the best quote, so the spread can close on its own after a level is emptied. Measuring from the same-side best would only ever add depth behind the best, and the spread could widen but never narrow.
-**Consequence.** `_level_price(side, d)` is the single place that implements this arithmetic; both `_rates` and `_next_event` use it. The number of levels `K` must exceed the spread for every distance to be a valid price. The seed populates distances 2..K so that the seeded levels coincide with those _rates observes; distance 1 (inside the initial spread) starts empty.”
+**Consequence.** `_level_price(side, d)` is the single place that implements this arithmetic; both `_rates` and `_next_event` use it. The number of levels `K` must exceed the spread for every distance to be a valid price. The seed populates distances 2..K so that the seeded levels coincide with those `_rates` observes; distance 1 (inside the initial spread) starts empty.
 
 ## D10 — Order sizes are geometric with mean `qty_mean`
 **Decision.** Every simulated limit and market order has size drawn from `Geometric(1 / qty_mean)`, with support {1, 2, …} and mean exactly `qty_mean`. One draw per order, none for cancellations.
 **Why.** Simplest discrete law with the right support and a one-parameter mean. Its tail is exponential, so no huge orders; a heavier tail can be swapped in later at a single call site (`_draw_qty`).
-**Consequence.** Rates are expressed per order, not per share, except cancellations (D11). The equilibrium depth used by the seed is `lambda(d) * qty_mean / theta`.
+**Consequence.** All rates are expressed per order, not per share, cancellations included (D11). The equilibrium depth used by the seed is `lambda(d) * qty_mean / theta`.
 
-## D11 — Cancellations remove one whole order, chosen in proportion to its size, never ours
-**Decision.** When a cancellation event is drawn at distance `d`, one resting order at that level is selected with probability proportional to its quantity and cancelled entirely. Orders with `is_mine = True` are never candidates. If no candidate exists, the event has no effect but the clock still advances.
-**Why.** The CST rate `theta * Q_d` models one clock per share; selecting an order by size preserves that total rate while matching real markets, where cancellations are of whole orders. Our own orders are cancelled only by our policy.
-**Consequence.** A level consisting only of our orders is never cancelled by the flow; our orders at a level are therefore a slight stabiliser of that level.
+## D11 — Cancellations remove one whole order, chosen uniformly, never ours
+**Decision.** Every resting order of the flow is cancelled at rate `theta`, whatever its size: a level at distance `d` holding `n_d` such orders loses one at rate `theta * n_d`. When a cancellation is drawn at distance `d`, one of those orders is chosen uniformly and removed entirely. Orders with `is_mine = True` are not counted in the rate and are never candidates.
+**Why.** In Cont, Stoikov and Talreja every order has unit size and is cancelled at rate `theta`, so a rate per order and a rate per share are the same thing. With orders of 50 shares on average they differ. The clock is kept per order because cancellations in real markets are of whole orders, and because it gives the equilibrium of D10 directly: arrivals `lambda(d)` balance departures `theta * n_d` at `n_d = lambda(d) / theta` orders, i.e. `lambda(d) * qty_mean / theta` shares. Our own orders are cancelled only by our policy (D16, D17).
+**Consequence.** The cancellation rate of a level depends on how many orders it holds, not on how many shares. A level consisting only of our orders is never cancelled by the flow. `theta` is a rate per order: a value quoted per share in the literature cannot be used as it is (D13).
 
 ## D12 — A liquidity floor prevents a side from emptying
 **Decision.** After every event, each side whose total depth is below `floor` receives one order of size `floor` at distance `K + 1` from the opposite best. The number of interventions is counted in `n_floor_events`.
@@ -56,7 +56,7 @@
 
 ## D13 — Default order-flow parameters
 **Decision.** `lambda0 = 2, alpha = 1.2, theta = 0.2, mu = 1.0, qty_mean = 50, K = 10, floor = 100`.
-**Why.** Chosen in `notebooks/01_book_sanity.ipynb` from a grid over `theta`, `mu`, `alpha`. Target: a liquid stock. With these values (3 seeds, 50k events): spread = 1 tick 95 % of the time; 2.2–2.5 mid changes per 100 events; ≈ 275 shares at the best, ≈ 33 at distance 10; floor triggered 1–4 times per run. `theta = 0.02` (CST-like per-share value reinterpreted per order) gives a frozen book; `mu ≥ 2` empties it.
+**Why.** Chosen in `notebooks/01_book_sanity.ipynb` from a grid over `theta`, `mu`, `alpha`. Target: a liquid stock. With these values (3 seeds, 50k events): spread = 1 tick 95 % of the time; 2.2–2.6 mid changes per 100 events; ≈ 275 shares at the best, ≈ 32 at distance 10; floor triggered 3–7 times per run. `theta = 0.02` (CST-like per-share value reinterpreted per order) gives a frozen book; `mu ≥ 2` empties it.
 **Consequence.** `SimParams()` is this configuration everywhere (tests, experiments). Time unit: ≈ 20 events per unit of simulated time.
 
 ## D14 — `step(dt)` ends exactly at `t + dt`
@@ -112,7 +112,7 @@
 ## D24 — Rule-based baseline: two thresholds, after Cartea and Jaimungal
 **Decision.** `ThresholdRule(tau, ahead)` sends to market whatever exceeds a tolerated delay (gap − `tau`) and posts the rest of gap + `ahead` at our touch; at the last step the whole gap goes to market, as in D22. It uses no fill model and solves no optimisation.
 **Why.** Cartea and Jaimungal (2015) execute passively when ahead of schedule and cross the spread to catch up when behind. This is the simplest rule of that kind with the same information and order types as MPC; it is in the spirit of their result, not the optimal strategy they derive. Its parameters mirror MPC's tubes (`tau` ↔ `rho_low`, `ahead` ↔ `rho_up`), so the two are compared at equal tolerance.
-**Consequence.** With constant fill probabilities and the default settings, MPC makes exactly the decisions of `ThresholdRule(tau=rho_low, ahead=rho_up)` (tested step by step). The QP can depart from the rule only through a state-dependent fill model, a large `gamma`, or an active variance budget `beta`.
+**Consequence.** With constant fill probabilities and the default settings, MPC makes exactly the decisions of `ThresholdRule(tau=rho_low, ahead=rho_up)` (tested step by step). The QP can depart from the rule only through a state-dependent fill model, a larger `gamma` (from about 0.025 with the measured probabilities, where it starts posting behind the touch), or an active variance budget `beta`.
 
 ## D25 — State-dependent fill model: fractional logit on the queue ahead
 **Decision.** `LogisticFill` predicts the executed fraction of an order posted at candidate level j as sigmoid(beta · x), with x = (1, log(1 + shares ahead), level, 1[spread > 1]). It is fitted by Newton's method on the cross-entropy with the executed fraction as outcome (fractional logit). The queue feature is computed by one function, `shares_ahead_by_level`, used both when collecting samples and when predicting.

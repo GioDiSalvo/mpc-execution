@@ -34,7 +34,7 @@ class BookState:
 @dataclass
 class SimParams:
     """Rates of the Cont-Stoikov-Talreja order flow. Time unit is arbitrary: only ratios matter.
-    See docs/notes.pdf, Section 2."""
+    See DESIGN.md (D9-D13) and notebooks/01_book_sanity.ipynb."""
     K: int = 10           # price levels per side beyond the best (distances 1 ... K)
     lambda0: float = 2.0    # limit-order arrival rate at distance 1
     alpha: float = 1.2      # power-law decay of arrivals with distance
@@ -80,7 +80,7 @@ class Simulator:
         return ref + sign * d
 
     def _level_qty(self, side, d):
-        """Tot qty in all resting orders at distance d that the flow may cancel (ours included)."""
+        """Total quantity resting at distance d, ours included. Used by the diagnostics of notebook 01."""
         book_side = self.book.bids if side is Side.BUY else self.book.asks
         price = self._level_price(side, d)
         queue = book_side.get(price)
@@ -224,7 +224,7 @@ class Simulator:
     def snapshot(self) -> BookState:
         """What a policy observes now (D15): depth from the own-side best, our resting orders with queue position."""
         K = self.p.K
-        assert K >= 3,"imbalance uses 3 levels, so K must be >= {3}, but is currently K={K}."
+        assert K >= 3, f"imbalance uses 3 levels, so K must be >= 3, but is currently K={K}."
         b = self.book
         best_bid, best_ask = b.best_bid(), b.best_ask()
         assert best_bid is not None and best_ask is not None, "floor should keep both sides populated"
