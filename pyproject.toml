@@ -5,8 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mpc_execution"
 version = "0.1.0"
+description = "Model predictive control for trade execution on a simulated limit order book"
+readme = "README.md"
+authors = [{ name = "Giovanni Domenico Di Salvo" }]
 requires-python = ">=3.10"
-dependencies = ["numpy", "pandas", "cvxpy"]
+dependencies = ["numpy", "pandas", "cvxpy", "clarabel"]
 
 [project.optional-dependencies]
 dev = ["pytest", "matplotlib", "jupyter"]

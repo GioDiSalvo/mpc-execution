@@ -18,7 +18,7 @@ def reliability_table(y: np.ndarray, p: np.ndarray, n_bins: int = 10) -> pd.Data
     Columns: predicted (mean p), observed (mean y), sem (standard error of observed), count."""
     assert len(p) == len(y)
     y, p = np.asarray(y, dtype=float), np.asarray(p, dtype=float)
-    order = np.argsort(p)                            # indices that sort p, lowest first
+    order = np.argsort(p, kind="stable")             # indices that sort p, lowest first; ties keep their order
     rows = []
     for idx in np.array_split(order, n_bins):        # equal-count groups of those indices
         rows.append({"predicted": p[idx].mean(),

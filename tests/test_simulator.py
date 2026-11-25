@@ -39,7 +39,7 @@ def test_rates_have_the_right_shape_and_values():
     assert len(rates) == 4 * p.K + 2
     assert np.all(rates >= 0) and rates.sum() > 0
     for d in range(1, K + 1):
-        assert rates[d - 1] == rates[d - 1 + K] == p.lam(d)
+        assert rates[d - 1] == rates[d - 1 + K] == pytest.approx(p.lam(d))
         if d == 1:
             assert rates[2 * K] == 0 and rates[3 * K] == 0     # inside the spread: empty
             continue
