@@ -1,9 +1,7 @@
 numpy
 pandas
-scipy
 cvxpy
 clarabel
-scikit-learn
 matplotlib
 pytest
 jupyter
